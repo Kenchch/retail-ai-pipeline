@@ -1,17 +1,13 @@
-# Pipeline configuration.
-# Everything the pipeline needs to run lives here - no hard-coded paths or
-# thresholds in the code, so the same codebase can be pointed at dev / prod
-# data or at a cloud storage account without a code change.
+# Everything tunable lives here - no thresholds or team lists in code.
 
 paths:
   raw: data/raw/online_retail.csv
-  usage_events: data/raw/usage_events.csv  # telemetry from the deployed solution
-  processed: data/processed          # Parquet layer (analytics / feature store)
-  warehouse: data/warehouse/retail.db  # SQLite stand-in for the serving DB
-  reports: reports                   # generated data-quality reports
+  usage_events: data/raw/usage_events.csv
+  processed: data/processed
+  warehouse: data/warehouse/retail.db
+  reports: reports
 
 extract:
-  # Column names as they appear in the source file, mapped to our internal names.
   column_map:
     InvoiceNo: invoice_no
     StockCode: stock_code
@@ -24,43 +20,30 @@ extract:
   date_format: "%m/%d/%Y %H:%M"
 
 quality:
-  # Rows failing a rule marked `blocking: true` are quarantined and never reach
-  # the warehouse. Non-blocking rules are reported but tolerated.
-  max_unit_price: 1000.0        # anything above this is treated as an outlier
   min_unit_price: 0.01
-  price_outlier_quantile: 0.999 # empirical outlier band, reported alongside the fixed cap
-  # Non-product stock codes (postage, bank charges, manual adjustments...).
-  # They are valid business rows but must not enter the product dimension.
-  non_product_codes: ["POST", "DOT", "M", "m", "C2", "S", "BANK CHARGES", "AMAZONFEE", "CRUK", "PADS", "B", "D"]
-  # Pipeline fails loudly if the share of quarantined rows exceeds this.
-  max_quarantine_rate: 0.30
+  max_unit_price: 1000.0
+  non_product_codes: ["POST", "DOT", "M", "C2", "S", "BANK CHARGES", "AMAZONFEE", "CRUK", "PADS", "B", "D"]
+  max_quarantine_rate: 0.30   # above this the run fails instead of loading
 
 recommend:
-  min_support_count: 30   # a pair must co-occur in at least this many baskets
+  min_support_count: 30       # a pair must appear in at least this many baskets
   min_confidence: 0.10
   min_lift: 1.0
-  top_n: 5                # recommendations stored per product
-  max_basket_size: 60     # ignore huge wholesale baskets - they add noise
-  cold_start_top_n: 5     # TF-IDF description-similarity fallback
+  top_n: 5
+  max_basket_size: 60
 
 adoption:
-  # The measurement plan behind these numbers is docs/06_adoption_and_comms.md.
-  #
-  # The roster is the single source of truth for who the solution was rolled out
-  # to. Two things depend on it and both matter:
-  #   * it is the denominator for reach and activation, and
-  #   * it is the TEAM LIST the report iterates over.
-  # The second is the one that is easy to get wrong. Deriving the team list from
-  # whoever appears in the event log means a team with zero adoption vanishes
-  # from the report entirely - which is precisely the moment the number is worth
-  # reading. Licensed headcount is summed from here; it is not repeated anywhere.
+  # The roster is the source of truth: it is both the denominator for reach and
+  # the team list the report iterates over. Deriving the team list from the
+  # event log instead would drop any team with zero adoption - exactly the team
+  # the report exists to surface.
   roster:
     Category Management: 18
     Merchandising: 14
     Online Trading: 11
     Marketing: 9
     Store Ops: 10
-  target_reach_pct: 70        # quarterly target: % of licensed users active in the last 4 weeks
-  target_action_rate_pct: 25  # % of viewed recommendations that get acted on
-  target_csat: 4.0            # mean of 1-5 feedback scores
-  active_window_weeks: 4      # window used for "active user"
+  active_window_weeks: 4
+  target_reach_pct: 70
+  target_action_rate_pct: 25
+  target_csat: 4.0
