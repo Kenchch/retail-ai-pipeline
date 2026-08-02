@@ -238,9 +238,11 @@ not modesty; it is the only way the rest of it gets believed.
 ```bash
 pip install -r requirements.txt
 python scripts/download_data.py     # ~45 MB into data/raw/
-python scripts/simulate_usage.py    # usage telemetry (see note above)
 python run_pipeline.py              # ~25 s end to end
 pytest -q                           # 20 tests
+
+python scripts/simulate_usage.py    # regenerate the usage telemetry (the first
+                                    # pipeline run creates it automatically)
 
 node workshop/build_deck.js         # rebuild the workshop deck (needs pptxgenjs)
 ```

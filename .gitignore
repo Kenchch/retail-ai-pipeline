@@ -13,9 +13,15 @@ data/processed/*
 data/warehouse/*
 !data/warehouse/.gitkeep
 
-# Generated run artefacts
+# Generated run artefacts. The reports are deliberately committed - they are
+# the readable output of a run, and a reader should not have to clone and
+# execute the pipeline to see what it produces. The heavyweight data layers
+# above stay out.
 reports/*
 !reports/.gitkeep
+!reports/data_quality_report.md
+!reports/run_metrics.json
+!reports/adoption_dashboard.html
 
 # Workshop deck QA renders (regenerate with soffice + pdftoppm)
 workshop/*.pdf
