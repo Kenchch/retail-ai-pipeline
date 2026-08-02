@@ -8,6 +8,8 @@ wires them together and records what the run did.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 
@@ -57,6 +59,7 @@ def run(config_path: str | None = None) -> dict:
 
     log.info("=" * 78)
     log.info("STAGE 6/6  ADOPTION (is anyone using it?)")
+    _ensure_usage_events(cfg)
     adoption = measure(tables, cfg)
     load(adoption, cfg)
     dashboard_path = build_dashboard(adoption, cfg)
@@ -93,6 +96,22 @@ def run(config_path: str | None = None) -> dict:
     log.info("Pipeline finished in %.1fs | metrics -> %s", elapsed, out)
     _print_sample(recs)
     return metrics
+
+
+def _ensure_usage_events(cfg: Config) -> None:
+    """Generate the usage event log on first run.
+
+    Chicken-and-egg: the simulator wants real stock codes, which only exist once
+    the product dimension has been built - but adoption runs after that, so by
+    the time we get here the codes are available. Bootstrapping it from inside
+    the run means a fresh clone works with one command instead of failing at
+    stage 6 and needing a second pass.
+    """
+    if cfg.paths["usage_events"].exists():
+        return
+    script = cfg.root / "scripts" / "simulate_usage.py"
+    log.info("No usage telemetry found - generating it from %s", script.name)
+    subprocess.run([sys.executable, str(script)], check=True, cwd=cfg.root)
 
 
 def _print_sample(recs: pd.DataFrame, n: int = 5) -> None:

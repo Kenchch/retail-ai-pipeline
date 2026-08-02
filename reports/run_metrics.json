@@ -1,0 +1,99 @@
+{
+  "run_ts_utc": "2026-08-02T10:38:24+00:00",
+  "runtime_seconds": 25.3,
+  "rows_source": 541909,
+  "rows_quarantined": 19343,
+  "quarantine_rate_pct": 3.569,
+  "rows_loaded": 522566,
+  "invoices_source": 25900,
+  "invoices_loaded": 19773,
+  "products": 3803,
+  "customers": 4334,
+  "revenue_loaded": 10247353.28,
+  "recommendation_rows": 17300,
+  "products_with_recommendations": 3800,
+  "catalogue_coverage_pct": 99.92,
+  "checks": [
+    {
+      "check": "duplicate_line_items",
+      "dimension": "uniqueness",
+      "blocking": true,
+      "failed_rows": 5270,
+      "failed_pct": 0.972,
+      "description": "Identical invoice / product / qty / price / timestamp row appearing more than once"
+    },
+    {
+      "check": "missing_invoice_key",
+      "dimension": "completeness",
+      "blocking": true,
+      "failed_rows": 0,
+      "failed_pct": 0.0,
+      "description": "Invoice number, stock code or timestamp is null - row cannot be modelled"
+    },
+    {
+      "check": "cancelled_invoice",
+      "dimension": "validity",
+      "blocking": true,
+      "failed_rows": 9288,
+      "failed_pct": 1.714,
+      "description": "Invoice number prefixed with 'C' - a cancellation, not a sale"
+    },
+    {
+      "check": "non_positive_quantity",
+      "dimension": "validity",
+      "blocking": true,
+      "failed_rows": 10624,
+      "failed_pct": 1.96,
+      "description": "Quantity is null, zero or negative (returns and stock adjustments)"
+    },
+    {
+      "check": "non_positive_price",
+      "dimension": "validity",
+      "blocking": true,
+      "failed_rows": 2521,
+      "failed_pct": 0.465,
+      "description": "Unit price is null or below the minimum sellable price"
+    },
+    {
+      "check": "price_outlier",
+      "dimension": "validity",
+      "blocking": true,
+      "failed_rows": 120,
+      "failed_pct": 0.022,
+      "description": "Unit price above the configured cap - almost always an adjustment line"
+    },
+    {
+      "check": "non_product_stock_code",
+      "dimension": "consistency",
+      "blocking": true,
+      "failed_rows": 2916,
+      "failed_pct": 0.538,
+      "description": "Stock code is postage / bank charge / manual adjustment, not a sellable product"
+    },
+    {
+      "check": "missing_description",
+      "dimension": "completeness",
+      "blocking": false,
+      "failed_rows": 1454,
+      "failed_pct": 0.268,
+      "description": "Product description is blank - degrades the recommender but not the sales facts"
+    },
+    {
+      "check": "missing_customer_id",
+      "dimension": "completeness",
+      "blocking": false,
+      "failed_rows": 135080,
+      "failed_pct": 24.927,
+      "description": "No customer id - guest checkout; usable for basket analysis, not for customer analytics"
+    }
+  ],
+  "adoption": {
+    "reach_pct": 75.8,
+    "activation_pct": 77.4,
+    "action_rate_pct": 22.6,
+    "csat": 4.18,
+    "stickiness_pct": 55.3,
+    "sessions_per_active_user": 1.77
+  },
+  "adoption_dashboard": "/home/claude/retail-ai-pipeline/reports/adoption_dashboard.html"
+}
