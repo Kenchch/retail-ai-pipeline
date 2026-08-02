@@ -265,6 +265,8 @@ def build(adoption: dict[str, pd.DataFrame], cfg: Config) -> str:
     weekly = adoption["adoption_weekly"]
     teams = adoption["adoption_by_team"]
 
+    rows_available = not teams.empty
+
     def hv(metric: str):
         return headline.loc[metric, "value"] if metric in headline.index else None
 
@@ -308,7 +310,10 @@ def build(adoption: dict[str, pd.DataFrame], cfg: Config) -> str:
         ],
     }
 
-    rows = "\n".join(
+    if not rows_available:
+        rows = ('        <tr><td colspan="9" style="text-align:center;color:var(--muted)">'
+                "No teams to report &mdash; check the roster in config.yaml.</td></tr>")
+    rows = rows if not rows_available else "\n".join(
         f"        <tr><td>{r.team}</td>"
         f"<td class='num'>{int(r.licensed_users)}</td>"
         f"<td class='num'>{int(r.active_users_last_4w)}</td>"
@@ -321,7 +326,16 @@ def build(adoption: dict[str, pd.DataFrame], cfg: Config) -> str:
         for r in teams.itertuples()
     )
 
-    period = f"{weekly['week_start'].min():%d %b} &ndash; {weekly['week_start'].max():%d %b %Y}"
+    # An empty weekly table means the solution has not been used at all in the
+    # period. That is a legitimate - and important - thing for this page to
+    # report, so it must render, not fail on a date format.
+    if weekly.empty:
+        period = "no activity recorded in this period"
+    else:
+        period = (
+            f"{weekly['week_start'].min():%d %b} &ndash; "
+            f"{weekly['week_start'].max():%d %b %Y}"
+        )
     tiles = (
         _tile("Reach (last 4 weeks)", hv("reach_pct"), "%",
               cfg.adoption["target_reach_pct"], "")

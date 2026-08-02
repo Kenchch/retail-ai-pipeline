@@ -36,6 +36,14 @@ from .config import Config, get_logger
 
 log = get_logger(__name__)
 
+# The output schema, declared once. An empty result is still a table with these
+# columns - a DataFrame with zero columns is not "no recommendations", it is a
+# shape no consumer can read, and it produces invalid SQL at the load stage.
+RECOMMENDATION_COLUMNS = [
+    "stock_code", "description", "recommended_stock_code", "recommended_description",
+    "rank", "method", "pair_baskets", "support", "confidence", "lift", "similarity",
+]
+
 
 # --------------------------------------------------------------------------- #
 # 1. Co-purchase rules from structured transaction data
@@ -137,8 +145,31 @@ def content_fallback(
         return pd.DataFrame()
 
     top_n = cfg.recommend["cold_start_top_n"]
-    vec = TfidfVectorizer(lowercase=True, stop_words="english", ngram_range=(1, 2), min_df=2)
-    matrix = vec.fit_transform(catalogue["description"])
+    # `min_df=2` keeps one-off words out of the vocabulary, which is right on a
+    # real catalogue and fatal on a small or unusual one: if no term survives
+    # pruning - or the descriptions are nothing but stop words - the vectoriser
+    # raises. This fallback is a nice-to-have, so it degrades rather than taking
+    # down the co-purchase rules that were computed successfully.
+    matrix = None
+    for min_df in (2, 1):
+        try:
+            vec = TfidfVectorizer(
+                lowercase=True, stop_words="english", ngram_range=(1, 2), min_df=min_df
+            )
+            matrix = vec.fit_transform(catalogue["description"])
+            if min_df == 1:
+                log.warning(
+                    "Descriptions share too few terms for min_df=2; retried with min_df=1"
+                )
+            break
+        except ValueError as exc:
+            log.warning("TF-IDF with min_df=%s failed: %s", min_df, exc)
+    if matrix is None or matrix.shape[1] == 0:
+        log.warning(
+            "Product descriptions carry no usable vocabulary - skipping the content "
+            "fallback. Co-purchase recommendations are unaffected."
+        )
+        return pd.DataFrame()
     log.info(
         "Cold start: %s products without a rule | TF-IDF vocabulary %s terms",
         f"{len(cold):,}", f"{len(vec.vocabulary_):,}",
@@ -193,7 +224,7 @@ def recommend(tables: dict[str, pd.DataFrame], cfg: Config) -> pd.DataFrame:
     recs = pd.concat([top, cold], ignore_index=True) if not cold.empty else top
     if recs.empty:
         log.warning("No recommendations produced - loosen the thresholds in config.yaml")
-        return recs
+        return pd.DataFrame(columns=RECOMMENDATION_COLUMNS)
 
     # Attach human-readable names so the table can be handed straight to a
     # business user or a merchandising tool without another join.

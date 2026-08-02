@@ -31,7 +31,7 @@ retailer, Dec 2010 – Dec 2011.
 | Recommendations produced | 17,300 rows covering 3,800 products (99.9% of catalogue) |
 | Adoption tracked | 62 licensed users, 12 weeks, 5 teams |
 | End-to-end runtime | ~25 s on a laptop |
-| Tests | 31, all passing |
+| Tests | 47, all passing (94% line coverage) |
 
 The strongest associations the pipeline finds are the ones a merchandiser would
 expect — the cheapest sanity check there is:
@@ -256,7 +256,7 @@ not modesty; it is the only way the rest of it gets believed.
 pip install -r requirements.txt
 python scripts/download_data.py     # ~45 MB into data/raw/
 python run_pipeline.py              # ~25 s end to end
-pytest -q                           # 31 tests
+pytest -q                           # 47 tests
 
 python scripts/simulate_usage.py    # regenerate the usage telemetry (the first
                                     # pipeline run creates it automatically)
@@ -320,6 +320,10 @@ tests/test_adoption.py            session splitting; reach divides by licensed
 tests/test_degenerate_inputs.py   regression tests for defects that shipped -
                                   a team with zero adoption, a week with zero
                                   activity, an empty feed, a dateless extract
+tests/test_extract_load.py        a changed source schema; an empty but shaped
+                                  table round-tripping through both layers
+tests/test_recommend_dashboard.py assembling recommendations; rendering when
+                                  there is nothing to render
 ```
 
 `test_degenerate_inputs.py` exists because the first version of this suite was
@@ -331,6 +335,16 @@ holes wherever the shop was closed. They share one root cause &mdash; deriving
 the set of things that *should* exist from the data that *happens* to be there
 &mdash; and the fix in each case was to declare the expected set (`config.yaml`
 roster, a week calendar, a date calendar) and report the gaps as zeros.
+
+A coverage run then showed that four modules had no tests at all, and the gap
+was not harmless: a changed source column surfaced as a `KeyError` naming an
+internal field, an empty recommendation set produced a zero-column table that
+made SQLite fail on `CREATE TABLE x ()`, a catalogue whose descriptions share
+no vocabulary crashed the TF-IDF fallback and took the working co-purchase
+rules down with it, and the dashboard that reports "nobody used it" was the one
+page that could not be rendered. **Every defect found in this project has been
+in the seams between correct pieces, not inside them** &mdash; which is why the
+suite now covers the glue rather than only the algorithms.
 
 The quality tests are the ones that matter most: if a rule silently stops firing,
 nothing crashes — bad rows just start flowing into the warehouse. The adoption
