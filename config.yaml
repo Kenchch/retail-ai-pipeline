@@ -5,6 +5,7 @@
 
 paths:
   raw: data/raw/online_retail.csv
+  usage_events: data/raw/usage_events.csv  # telemetry from the deployed solution
   processed: data/processed          # Parquet layer (analytics / feature store)
   warehouse: data/warehouse/retail.db  # SQLite stand-in for the serving DB
   reports: reports                   # generated data-quality reports
@@ -41,3 +42,11 @@ recommend:
   top_n: 5                # recommendations stored per product
   max_basket_size: 60     # ignore huge wholesale baskets - they add noise
   cold_start_top_n: 5     # TF-IDF description-similarity fallback
+
+adoption:
+  # The measurement plan behind these numbers is docs/06_adoption_and_comms.md.
+  licensed_users: 62          # people the solution was rolled out to
+  target_reach_pct: 70        # quarterly target: % of licensed users active in the last 4 weeks
+  target_action_rate_pct: 25  # % of viewed recommendations that get acted on
+  target_csat: 4.0            # mean of 1-5 feedback scores
+  active_window_weeks: 4      # window used for "active user"
