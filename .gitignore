@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Data is downloaded, never committed.
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/warehouse/*
+!data/warehouse/.gitkeep
+
+# Generated run artefacts
+reports/*
+!reports/.gitkeep

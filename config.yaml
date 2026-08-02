@@ -1,0 +1,43 @@
+# Pipeline configuration.
+# Everything the pipeline needs to run lives here - no hard-coded paths or
+# thresholds in the code, so the same codebase can be pointed at dev / prod
+# data or at a cloud storage account without a code change.
+
+paths:
+  raw: data/raw/online_retail.csv
+  processed: data/processed          # Parquet layer (analytics / feature store)
+  warehouse: data/warehouse/retail.db  # SQLite stand-in for the serving DB
+  reports: reports                   # generated data-quality reports
+
+extract:
+  # Column names as they appear in the source file, mapped to our internal names.
+  column_map:
+    InvoiceNo: invoice_no
+    StockCode: stock_code
+    Description: description
+    Quantity: quantity
+    InvoiceDate: invoice_ts
+    UnitPrice: unit_price
+    CustomerID: customer_id
+    Country: country
+  date_format: "%m/%d/%Y %H:%M"
+
+quality:
+  # Rows failing a rule marked `blocking: true` are quarantined and never reach
+  # the warehouse. Non-blocking rules are reported but tolerated.
+  max_unit_price: 1000.0        # anything above this is treated as an outlier
+  min_unit_price: 0.01
+  price_outlier_quantile: 0.999 # empirical outlier band, reported alongside the fixed cap
+  # Non-product stock codes (postage, bank charges, manual adjustments...).
+  # They are valid business rows but must not enter the product dimension.
+  non_product_codes: ["POST", "DOT", "M", "m", "C2", "S", "BANK CHARGES", "AMAZONFEE", "CRUK", "PADS", "B", "D"]
+  # Pipeline fails loudly if the share of quarantined rows exceeds this.
+  max_quarantine_rate: 0.30
+
+recommend:
+  min_support_count: 30   # a pair must co-occur in at least this many baskets
+  min_confidence: 0.10
+  min_lift: 1.0
+  top_n: 5                # recommendations stored per product
+  max_basket_size: 60     # ignore huge wholesale baskets - they add noise
+  cold_start_top_n: 5     # TF-IDF description-similarity fallback
