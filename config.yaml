@@ -45,7 +45,21 @@ recommend:
 
 adoption:
   # The measurement plan behind these numbers is docs/06_adoption_and_comms.md.
-  licensed_users: 62          # people the solution was rolled out to
+  #
+  # The roster is the single source of truth for who the solution was rolled out
+  # to. Two things depend on it and both matter:
+  #   * it is the denominator for reach and activation, and
+  #   * it is the TEAM LIST the report iterates over.
+  # The second is the one that is easy to get wrong. Deriving the team list from
+  # whoever appears in the event log means a team with zero adoption vanishes
+  # from the report entirely - which is precisely the moment the number is worth
+  # reading. Licensed headcount is summed from here; it is not repeated anywhere.
+  roster:
+    Category Management: 18
+    Merchandising: 14
+    Online Trading: 11
+    Marketing: 9
+    Store Ops: 10
   target_reach_pct: 70        # quarterly target: % of licensed users active in the last 4 weeks
   target_action_rate_pct: 25  # % of viewed recommendations that get acted on
   target_csat: 4.0            # mean of 1-5 feedback scores

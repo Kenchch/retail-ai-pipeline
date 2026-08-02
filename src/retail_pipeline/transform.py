@@ -70,15 +70,36 @@ def build_dim_customer(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_dim_date(df: pd.DataFrame) -> pd.DataFrame:
-    dates = pd.to_datetime(df["invoice_ts"].dt.date.unique())
-    dim = pd.DataFrame({"date_key": dates}).sort_values("date_key").reset_index(drop=True)
+    """A CONTINUOUS calendar over the loaded period, not just the days that traded.
+
+    Building the date dimension from the dates present in the data leaves holes
+    wherever the business was closed - this retailer does not trade Saturdays,
+    so 53 of them would simply not exist. A BI user grouping by week then sees
+    weeks silently built from six days, and "sales on days we were shut" becomes
+    unanswerable rather than zero. `has_sales` keeps the distinction between
+    "closed" and "missing data" available downstream.
+    """
+    observed = pd.to_datetime(pd.Series(df["invoice_ts"].dt.date.unique())).dropna()
+    if observed.empty:
+        raise ValueError(
+            "Cannot build a date dimension: no valid invoice timestamps survived "
+            "the quality stage. Check the source extract and `extract.date_format` "
+            "in config.yaml - a format mismatch turns every date into NaT silently."
+        )
+    calendar = pd.date_range(observed.min(), observed.max(), freq="D")
+    dim = pd.DataFrame({"date_key": calendar})
+    dim["has_sales"] = dim["date_key"].isin(observed)
     dim["year"] = dim["date_key"].dt.year
     dim["month"] = dim["date_key"].dt.month
     dim["day"] = dim["date_key"].dt.day
     dim["day_of_week"] = dim["date_key"].dt.day_name()
     dim["iso_week"] = dim["date_key"].dt.isocalendar().week.astype(int)
     dim["is_weekend"] = dim["date_key"].dt.dayofweek >= 5
-    log.info("dim_date: %s days", f"{len(dim):,}")
+    log.info(
+        "dim_date: %s days (%s with sales, %s without)",
+        f"{len(dim):,}", f"{int(dim['has_sales'].sum()):,}",
+        f"{int((~dim['has_sales']).sum()):,}",
+    )
     return dim
 
 

@@ -51,3 +51,26 @@ def sample() -> pd.DataFrame:
     df["description"] = df["description"].astype("string")
     df["customer_id"] = df["customer_id"].astype("Int64")
     return df
+
+
+@pytest.fixture()
+def events() -> pd.DataFrame:
+    """Two users, one week, hand-countable.
+
+    U1: two sessions (10:00 burst, then 14:00 - a 4h gap), 3 views, 1 apply
+    U2: one session, 1 view, 0 applies, 1 feedback of 5
+    """
+    rows = [
+        ("2026-04-06 10:00", "U1", "Team A", "view", "S1", None),
+        ("2026-04-06 10:05", "U1", "Team A", "view", "S2", None),
+        ("2026-04-06 10:12", "U1", "Team A", "apply", "S2", None),
+        ("2026-04-06 14:00", "U1", "Team A", "view", "S3", None),
+        ("2026-04-07 09:00", "U2", "Team B", "view", "S1", None),
+        ("2026-04-07 09:10", "U2", "Team B", "feedback", None, 5),
+    ]
+    df = pd.DataFrame(
+        rows, columns=["event_ts", "user_id", "team", "event_type", "stock_code", "feedback_score"]
+    )
+    df["event_ts"] = pd.to_datetime(df["event_ts"])
+    df["week_start"] = df["event_ts"].dt.to_period("W-SUN").dt.start_time
+    return df
