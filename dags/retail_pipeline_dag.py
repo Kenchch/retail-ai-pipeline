@@ -1,21 +1,20 @@
-"""Airflow DAG for the retail pipeline.
+"""Airflow DAG - how the pipeline is scheduled in production.
 
-The pipeline runs standalone via `python run_pipeline.py`; this DAG is how it
-would be scheduled in production. Each stage is a separate task rather than one
-big task, because that is what gives per-stage retries, per-stage runtime in the
-Airflow UI, and a failure that points at the stage that broke.
+Each stage is its own task rather than one big one, because that is what gives
+per-stage retries, per-stage runtime in the UI, and a failure that points at the
+stage that broke. The quality task is a hard gate: it raises when too many rows
+are quarantined, so a bad upstream extract stops the run *before* anything
+reaches the warehouse, leaving last night's data intact.
 
-The data-quality task is a hard gate: `split_quarantine` raises when the share
-of quarantined rows exceeds `quality.max_quarantine_rate`, so a bad upstream
-extract stops the DAG *before* anything reaches the warehouse, instead of
-quietly publishing thin data.
+Dataframes move between tasks through the Parquet layer on shared storage, not
+through XCom - XCom is a metadata channel and the wrong place for half a million
+rows. In a cloud deployment `data/` would be a blob container or ADLS path.
 
-The equivalent in Azure Data Factory is a pipeline with the same five
-activities chained on success, with the quality activity's failure path wired
-to an alert - the Python modules would be unchanged.
+The Azure Data Factory equivalent is the same activities chained on success with
+the quality activity's failure path wired to an alert; the Python is unchanged.
 
-To run it: put this repository on the Airflow worker's PYTHONPATH (or install
-it as a package) and drop this file in $AIRFLOW_HOME/dags/.
+To run: put this repo on the worker's PYTHONPATH and drop this file in
+$AIRFLOW_HOME/dags/.
 """
 
 from __future__ import annotations
@@ -24,118 +23,75 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from retail_pipeline.adoption import measure  # noqa: E402
-from retail_pipeline.config import Config  # noqa: E402
-from retail_pipeline.dashboard import build as build_dashboard  # noqa: E402
-from retail_pipeline.extract import extract  # noqa: E402
-from retail_pipeline.load import load  # noqa: E402
-from retail_pipeline.quality import run_checks, split_quarantine, write_report  # noqa: E402
-from retail_pipeline.recommend import recommend  # noqa: E402
-from retail_pipeline.transform import transform  # noqa: E402
-
-CONFIG_PATH = str(REPO_ROOT / "config.yaml")
-
-default_args = {
-    "owner": "data-platform",
-    "retries": 2,
-    "retry_delay": timedelta(minutes=5),
-    "email_on_failure": True,
-}
+from retail_pipeline.adoption import measure_adoption            # noqa: E402
+from retail_pipeline.pipeline import (                           # noqa: E402
+    check_quality, extract, load, load_config, transform, write_quality_report,
+)
+from retail_pipeline.recommend import recommend                  # noqa: E402
 
 
-# --------------------------------------------------------------------------- #
-# Task callables.
-#
-# Dataframes are passed between tasks through the Parquet layer on shared
-# storage, not through XCom - XCom is a metadata channel and is the wrong place
-# for half a million rows. In a cloud deployment `data/` would be a blob
-# container / ADLS path.
-# --------------------------------------------------------------------------- #
-
-def _staging_path(cfg: Config, name: str) -> Path:
-    return cfg.paths["processed"] / f"_staging_{name}.parquet"
+def _staging(cfg, name: str) -> Path:
+    return cfg["paths"]["processed"] / f"_staging_{name}.parquet"
 
 
-def task_extract(**_) -> None:
-    cfg = Config.load(CONFIG_PATH)
-    cfg.ensure_dirs()
-    extract(cfg).to_parquet(_staging_path(cfg, "raw"), index=False)
+def task_extract(**_):
+    cfg = load_config()
+    cfg["paths"]["processed"].mkdir(parents=True, exist_ok=True)
+    extract(cfg).to_parquet(_staging(cfg, "raw"), index=False)
 
 
-def task_quality(**_) -> None:
-    import pandas as pd
-
-    cfg = Config.load(CONFIG_PATH)
-    raw = pd.read_parquet(_staging_path(cfg, "raw"))
-    results, flags = run_checks(raw, cfg)
-    clean, quarantine = split_quarantine(raw, flags, cfg)  # raises -> DAG stops here
-    write_report(results, cfg, len(raw), len(clean), len(quarantine))
-    clean.to_parquet(_staging_path(cfg, "clean"), index=False)
-    quarantine.to_parquet(_staging_path(cfg, "quarantine"), index=False)
+def task_quality(**_):
+    cfg = load_config()
+    raw = pd.read_parquet(_staging(cfg, "raw"))
+    clean, quarantine, results = check_quality(raw, cfg)   # raises -> DAG stops here
+    write_quality_report(results, cfg, len(raw), len(clean), len(quarantine))
+    clean.to_parquet(_staging(cfg, "clean"), index=False)
+    quarantine.to_parquet(_staging(cfg, "quarantine"), index=False)
 
 
-def task_transform_load(**_) -> None:
-    import pandas as pd
-
-    cfg = Config.load(CONFIG_PATH)
-    clean = pd.read_parquet(_staging_path(cfg, "clean"))
-    tables = transform(clean)
-    tables["quarantine"] = pd.read_parquet(_staging_path(cfg, "quarantine"))
-    load(tables, cfg)
+def task_transform_load(**_):
+    cfg = load_config()
+    tables = transform(pd.read_parquet(_staging(cfg, "clean")))
+    load({**tables, "quarantine": pd.read_parquet(_staging(cfg, "quarantine"))}, cfg)
 
 
-def task_recommend(**_) -> None:
-    import pandas as pd
-
-    cfg = Config.load(CONFIG_PATH)
-    tables = {
-        "fact_sales": pd.read_parquet(cfg.paths["processed"] / "fact_sales.parquet"),
-        "dim_product": pd.read_parquet(cfg.paths["processed"] / "dim_product.parquet"),
-    }
+def task_recommend(**_):
+    cfg = load_config()
+    tables = {n: pd.read_parquet(cfg["paths"]["processed"] / f"{n}.parquet")
+              for n in ("fact_sales", "dim_product")}
     load({"recommendations": recommend(tables, cfg)}, cfg)
 
 
-def task_adoption(**_) -> None:
-    """Adoption measurement is a separate task, not a step inside the
-    recommendation build, because it fails for entirely different reasons - a
-    missing telemetry extract should not hold back the merchandising data that
-    the morning planogram review depends on."""
-    import pandas as pd
-
-    cfg = Config.load(CONFIG_PATH)
-    tables = {"dim_product": pd.read_parquet(cfg.paths["processed"] / "dim_product.parquet")}
-    adoption = measure(tables, cfg)
-    load(adoption, cfg)
-    build_dashboard(adoption, cfg)
+def task_adoption(**_):
+    """Separate task with `all_done`: a missing telemetry extract must not hold
+    back the merchandising data the morning planogram review depends on."""
+    cfg = load_config()
+    load(measure_adoption(cfg), cfg)
 
 
 with DAG(
     dag_id="retail_ai_pipeline",
-    description=(
-        "Ingest retail transactions, enforce data quality, publish the sales star "
-        "schema and product recommendations, and refresh adoption reporting"
-    ),
-    default_args=default_args,
+    description="Ingest retail transactions, gate on data quality, publish the sales "
+                "star schema, product recommendations and adoption reporting",
+    default_args={"owner": "data-platform", "retries": 2,
+                  "retry_delay": timedelta(minutes=5), "email_on_failure": True},
     start_date=datetime(2026, 1, 1),
-    schedule="0 4 * * *",   # nightly, after the source system's end-of-day close
+    schedule="0 4 * * *",          # nightly, after end-of-day close
     catchup=False,
     max_active_runs=1,
     tags=["retail", "etl", "data-quality", "recommendations"],
 ) as dag:
+    t1 = PythonOperator(task_id="extract", python_callable=task_extract)
+    t2 = PythonOperator(task_id="data_quality_gate", python_callable=task_quality)
+    t3 = PythonOperator(task_id="transform_and_load", python_callable=task_transform_load)
+    t4 = PythonOperator(task_id="build_recommendations", python_callable=task_recommend)
+    t5 = PythonOperator(task_id="measure_adoption", python_callable=task_adoption,
+                        trigger_rule="all_done")
 
-    extract_op = PythonOperator(task_id="extract", python_callable=task_extract)
-    quality_op = PythonOperator(task_id="data_quality_gate", python_callable=task_quality)
-    load_op = PythonOperator(task_id="transform_and_load", python_callable=task_transform_load)
-    recommend_op = PythonOperator(task_id="build_recommendations", python_callable=task_recommend)
-    adoption_op = PythonOperator(
-        task_id="measure_adoption", python_callable=task_adoption,
-        trigger_rule="all_done",  # runs even if recommendations failed - the
-    )                             # adoption question is still worth answering
-
-    extract_op >> quality_op >> load_op >> recommend_op >> adoption_op
+    t1 >> t2 >> t3 >> t4 >> t5
