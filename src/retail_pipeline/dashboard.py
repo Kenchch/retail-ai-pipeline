@@ -118,7 +118,8 @@ const svgEl = (n, a={}) => {
 function lineChart(mount, pts, opts) {
   const W = 520, H = 232, m = {t: 16, r: 42, b: 30, l: 38};
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
-  const ymax = Math.max(opts.target || 0, ...pts.map(p => p.y)) * 1.18;
+  const vals = pts.map(p => p.y).filter(v => v !== null);
+  const ymax = Math.max(opts.target || 0, ...vals) * 1.18;
   const x = i => m.l + (pts.length === 1 ? iw/2 : iw * i / (pts.length - 1));
   const y = v => m.t + ih - ih * (v / ymax);
   const svg = svgEl('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img',
@@ -147,12 +148,18 @@ function lineChart(mount, pts, opts) {
     const t = svgEl('text', {x: x(i), y: H - 8, class: 'tick', 'text-anchor': 'middle'});
     t.textContent = p.x; svg.appendChild(t);
   });
-  // 2px series line
-  const d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i)},${y(p.y)}`).join(' ');
+  // 2px series line. A null value is an UNDEFINED week, not a zero one - the
+  // line breaks there rather than dropping to the axis and inventing a number.
+  let pen = 'M';
+  const d = pts.map((p, i) => {
+    if (p.y === null) { pen = 'M'; return ''; }
+    const seg = `${pen}${x(i)},${y(p.y)}`; pen = 'L'; return seg;
+  }).join(' ').trim();
   svg.appendChild(svgEl('path', {d, fill: 'none', stroke: 'var(--series)',
     'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}));
   // markers with a 2px surface ring so overlaps stay readable
   pts.forEach((p, i) => {
+    if (p.y === null) return;
     svg.appendChild(svgEl('circle', {cx: x(i), cy: y(p.y), r: 4.5,
       fill: 'var(--series)', stroke: 'var(--surface)', 'stroke-width': 2}));
     if (p.note) {
@@ -160,12 +167,12 @@ function lineChart(mount, pts, opts) {
         'text-anchor': 'middle'}); t.textContent = p.note; svg.appendChild(t);
     }
   });
-  // direct label on the last point only
-  const last = pts[pts.length - 1];
+  // direct label on the last point that actually has a value
+  const last = [...pts].reverse().find(p => p.y !== null) || {y: 0};
+  const lastIdx = pts.lastIndexOf(last);
   // sits to the RIGHT of the final marker, in the reserved margin, so it can
   // never land on the line itself
-  const lt = svgEl('text', {x: x(pts.length - 1) + 9, y: y(last.y) + 4,
-    class: 'dlabel'});
+  const lt = svgEl('text', {x: x(lastIdx) + 9, y: y(last.y) + 4, class: 'dlabel'});
   lt.textContent = last.y.toFixed(1) + opts.unit; svg.appendChild(lt);
   // baseline
   svg.appendChild(svgEl('line', {x1: m.l, x2: W - m.r, y1: m.t + ih, y2: m.t + ih,
@@ -174,8 +181,9 @@ function lineChart(mount, pts, opts) {
   pts.forEach((p, i) => {
     const hit = svgEl('rect', {x: x(i) - iw / (pts.length * 2) - 2, y: m.t,
       width: iw / pts.length + 4, height: ih, fill: 'transparent'});
+    const shown = p.y === null ? 'no data' : p.y + opts.unit;
     hit.addEventListener('mousemove', e => showTip(e,
-      `<b>${p.full}</b><br>${opts.label}: ${p.y}${opts.unit}${p.extra ? '<br>' + p.extra : ''}`));
+      `<b>${p.full}</b><br>${opts.label}: ${shown}${p.extra ? '<br>' + p.extra : ''}`));
     hit.addEventListener('mouseleave', hideTip);
     svg.appendChild(hit);
   });
@@ -228,8 +236,15 @@ barChart($('#c-team'), DATA.teams, {target: DATA.targets.reach,
 
 
 def _tile(label: str, value, unit: str, target, meta: str) -> str:
-    if value is None:
-        return ""
+    """A metric with no data shows "no data", not a zero - the two mean
+    completely different things to whoever reads the tile."""
+    if value is None or pd.isna(value):
+        return f"""      <div class="tile">
+        <div class="lbl">{label}</div>
+        <div class="val" style="color:var(--muted)">&ndash;</div>
+        <div class="meta">no data this period</div>
+      </div>
+"""
     ok = target is None or value >= target
     status = (
         f'<span class="status {"ok" if ok else "bad"}"><span class="dot"></span>'
@@ -273,7 +288,7 @@ def build(adoption: dict[str, pd.DataFrame], cfg: Config) -> str:
             {
                 "x": f"W{int(r.week_no)}",
                 "full": f"Week {int(r.week_no)} ({r.week_start:%d %b})",
-                "y": float(r.action_rate_pct),
+                "y": None if pd.isna(r.action_rate_pct) else float(r.action_rate_pct),
                 "extra": f"{int(r.applies)} acted on / {int(r.views)} viewed",
                 "note": "",
             }

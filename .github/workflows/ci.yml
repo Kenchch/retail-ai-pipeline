@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        # The suite deliberately runs without the source dataset present - the
+        # tests build their own fixtures, so a green run here proves the logic
+        # rather than proving that one particular CSV is still downloadable.
+        run: pytest -q
+
+      - name: Check the pipeline modules import cleanly
+        run: python -c "import sys; sys.path.insert(0,'src'); import retail_pipeline.pipeline"

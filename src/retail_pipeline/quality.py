@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 
 from .config import Config, get_logger
@@ -110,8 +111,10 @@ def run_checks(df: pd.DataFrame, cfg: Config) -> tuple[pd.DataFrame, pd.DataFram
     """Return (results table, per-row failure flags)."""
     flags = pd.DataFrame(index=df.index)
     rows = []
+    if df.empty:
+        log.warning("Quality checks ran over an empty frame - nothing to check")
     for check in CHECKS:
-        mask = check.fn(df, cfg).fillna(True)
+        mask = check.fn(df, cfg).fillna(True).astype(bool)
         flags[check.name] = mask
         rows.append(
             {
@@ -119,7 +122,7 @@ def run_checks(df: pd.DataFrame, cfg: Config) -> tuple[pd.DataFrame, pd.DataFram
                 "dimension": check.dimension,
                 "blocking": check.blocking,
                 "failed_rows": int(mask.sum()),
-                "failed_pct": round(100 * mask.mean(), 3),
+                "failed_pct": round(100 * mask.mean(), 3) if len(df) else 0.0,
                 "description": check.description,
             }
         )
@@ -141,14 +144,20 @@ def split_quarantine(
     quarantine = df[failed_any].copy()
     # Record *why* each quarantined row was held back - this is what makes the
     # quarantine table actionable rather than just a bucket of rejects.
-    quarantine["quarantine_reasons"] = (
-        flags.loc[failed_any, blocking]
-        .apply(lambda r: ",".join(r.index[r.to_numpy()]), axis=1)
+    #
+    # Built by summing labelled columns rather than with .apply(axis=1): apply
+    # over an empty frame returns a DataFrame instead of a Series, and assigning
+    # that to one column raises - so a run where nothing (or everything) is
+    # quarantined would crash on the bookkeeping rather than on the data.
+    failed = flags.loc[failed_any, blocking].to_numpy(dtype=bool)
+    names = np.array(blocking)
+    quarantine["quarantine_reasons"] = pd.Series(
+        [",".join(names[row]) for row in failed], index=quarantine.index, dtype="object"
     )
 
     clean = df[~failed_any].copy()
 
-    rate = failed_any.mean()
+    rate = float(failed_any.mean()) if len(df) else 0.0
     log.info(
         "Quarantined %s of %s rows (%.2f%%); %s rows pass to the warehouse",
         f"{int(failed_any.sum()):,}", f"{len(df):,}", 100 * rate, f"{len(clean):,}",
@@ -167,12 +176,13 @@ def write_report(
 ) -> str:
     """Render a plain-Markdown data quality report next to the run outputs."""
     p999 = cfg.quality["price_outlier_quantile"]
+    pct = (100 * n_quarantined / n_rows_in) if n_rows_in else 0.0
     lines = [
         "# Data quality report",
         "",
         f"- Rows read from source: **{n_rows_in:,}**",
         f"- Rows quarantined (failed a blocking rule): **{n_quarantined:,}** "
-        f"({100 * n_quarantined / n_rows_in:.2f}%)",
+        f"({pct:.2f}%)",
         f"- Rows loaded to the warehouse: **{n_rows_out:,}**",
         f"- Outlier band used for reference: p{p999 * 100:g} of unit price",
         "",

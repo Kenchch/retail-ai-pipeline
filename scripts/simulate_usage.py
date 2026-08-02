@@ -37,6 +37,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "raw" / "usage_events.csv"
@@ -47,17 +48,27 @@ LAUNCH = datetime(2026, 4, 6)      # Monday of week 1
 WEEKS = 12
 WORKSHOP_WEEKS = {3, 8}            # AI-literacy sessions - expect a step change
 
-# Teams the solution was rolled out to, with headcount and a baseline weekly
-# engagement probability per person. Store Ops is the deliberate laggard.
-# `dormant` is the share of the team that never engages at all. Real rollouts
-# always have some - averaging them away is how an adoption number flatters.
-TEAMS = {
-    "Category Management": {"n": 18, "base": 0.55, "dormant": 0.10},
-    "Merchandising":       {"n": 14, "base": 0.48, "dormant": 0.15},
-    "Online Trading":      {"n": 11, "base": 0.50, "dormant": 0.10},
-    "Marketing":           {"n": 9,  "base": 0.32, "dormant": 0.35},
-    "Store Ops":           {"n": 10, "base": 0.16, "dormant": 0.55},
+# Simulation-only behaviour per team. Headcount is NOT here - it is read from
+# `adoption.roster` in config.yaml, which is the one place it is defined. A
+# second copy would drift, and the drift would show up as an adoption number
+# that quietly disagrees with the roster it claims to divide by.
+#
+# `base` is the weekly probability an engaged person uses it; `dormant` is the
+# share of the team that never engages at all. Real rollouts always have some -
+# averaging them away is how an adoption number flatters.
+BEHAVIOUR = {
+    "Category Management": {"base": 0.55, "dormant": 0.10},
+    "Merchandising":       {"base": 0.48, "dormant": 0.15},
+    "Online Trading":      {"base": 0.50, "dormant": 0.10},
+    "Marketing":           {"base": 0.32, "dormant": 0.35},
+    "Store Ops":           {"base": 0.16, "dormant": 0.55},
 }
+DEFAULT_BEHAVIOUR = {"base": 0.40, "dormant": 0.20}
+
+
+def load_roster() -> dict[str, int]:
+    with open(ROOT / "config.yaml", "r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh)["adoption"]["roster"]
 
 # Weekly multiplier on engagement: slow start, workshop bumps, holiday dip.
 WEEK_CURVE = {
@@ -66,7 +77,7 @@ WEEK_CURVE = {
 }
 
 
-def _load_stock_codes(rng: random.Random) -> list[str]:
+def _load_stock_codes() -> list[str]:
     """Use real stock codes so usage joins back to dim_product."""
     if PRODUCTS.exists():
         codes = pd.read_parquet(PRODUCTS, columns=["stock_code", "n_invoices"])
@@ -79,11 +90,12 @@ def _load_stock_codes(rng: random.Random) -> list[str]:
 
 def main() -> int:
     rng = random.Random(SEED)
-    codes = _load_stock_codes(rng)
+    codes = _load_stock_codes()
 
     users = []
-    for team, spec in TEAMS.items():
-        for i in range(spec["n"]):
+    for team, headcount in load_roster().items():
+        spec = BEHAVIOUR.get(team, DEFAULT_BEHAVIOUR)
+        for i in range(headcount):
             dormant = rng.random() < spec["dormant"]
             users.append(
                 {

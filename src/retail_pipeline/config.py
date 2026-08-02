@@ -36,9 +36,22 @@ class Config:
             extract=raw["extract"],
             quality=raw["quality"],
             recommend=raw["recommend"],
-            adoption=raw.get("adoption", {}),
+            adoption=cls._resolve_adoption(raw.get("adoption", {})),
             root=root,
         )
+
+    @staticmethod
+    def _resolve_adoption(adoption: dict[str, Any]) -> dict[str, Any]:
+        """Licensed headcount is derived from the roster, never stored beside it.
+
+        A total that is maintained separately from the per-team numbers is a
+        total that will eventually disagree with them.
+        """
+        roster = adoption.get("roster") or {}
+        adoption = dict(adoption)
+        adoption["roster"] = {str(k): int(v) for k, v in roster.items()}
+        adoption["licensed_users"] = sum(adoption["roster"].values())
+        return adoption
 
     def ensure_dirs(self) -> None:
         self.paths["processed"].mkdir(parents=True, exist_ok=True)

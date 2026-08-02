@@ -70,7 +70,19 @@ def _sessions(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def weekly_metrics(events: pd.DataFrame, cfg: Config) -> pd.DataFrame:
+    """Weekly trend over a CONTINUOUS calendar.
+
+    A week in which nobody touched the solution produces no events, so grouping
+    the event log by week silently drops that week - the trend line closes over
+    the gap and every later week's number shifts one position left. A week of
+    zero activity is a fact worth plotting, not an absence.
+    """
     licensed = cfg.adoption["licensed_users"]
+    if events.empty:
+        return pd.DataFrame(
+            columns=["week_no", "week_start", "active_users", "reach_pct", "sessions",
+                     "sessions_per_active_user", "views", "applies", "action_rate_pct"]
+        )
     sessions = _sessions(events)
 
     weekly = sessions.groupby("week_start").agg(
@@ -78,15 +90,30 @@ def weekly_metrics(events: pd.DataFrame, cfg: Config) -> pd.DataFrame:
         sessions=("session_key", "nunique"),
         views=("event_type", lambda s: int((s == "view").sum())),
         applies=("event_type", lambda s: int((s == "apply").sum())),
-    ).reset_index()
+    )
+
+    calendar = pd.date_range(weekly.index.min(), weekly.index.max(), freq="7D")
+    missing = calendar.difference(weekly.index)
+    if len(missing):
+        log.warning(
+            "%s week(s) with zero activity: %s - reported as 0%%, not skipped",
+            len(missing), ", ".join(d.strftime("%d %b") for d in missing),
+        )
+    weekly = weekly.reindex(calendar, fill_value=0).rename_axis("week_start").reset_index()
 
     weekly["week_no"] = range(1, len(weekly) + 1)
     weekly["reach_pct"] = (100 * weekly["active_users"] / licensed).round(1)
-    weekly["action_rate_pct"] = (
-        100 * weekly["applies"] / weekly["views"].replace(0, pd.NA)
-    ).round(1)
+    # A week with no views has an UNDEFINED action rate, not a zero one - there
+    # was nothing to act on. Null keeps it out of the average and leaves a
+    # visible gap in the chart instead of a fabricated 0%.
+    # `.where()` rather than `.replace(0, pd.NA)`: pd.NA turns the column to
+    # object dtype, and Series.round() on object dtype falls back to the builtin
+    # round() per element, which pd.NA does not implement. NaN keeps it float.
+    views = weekly["views"].astype(float)
+    weekly["action_rate_pct"] = (100 * weekly["applies"] / views.where(views > 0)).round(1)
+    active = weekly["active_users"].astype(float)
     weekly["sessions_per_active_user"] = (
-        weekly["sessions"] / weekly["active_users"]
+        weekly["sessions"] / active.where(active > 0)
     ).round(2)
     return weekly[
         ["week_no", "week_start", "active_users", "reach_pct", "sessions",
@@ -95,9 +122,34 @@ def weekly_metrics(events: pd.DataFrame, cfg: Config) -> pd.DataFrame:
 
 
 def team_metrics(events: pd.DataFrame, cfg: Config, team_sizes: dict[str, int]) -> pd.DataFrame:
-    window_end = events["event_ts"].max()
-    window_start = window_end - pd.Timedelta(weeks=cfg.adoption["active_window_weeks"])
-    recent = events[events["event_ts"] >= window_start]
+    """One row per team on the ROSTER - including teams with no events at all.
+
+    `team_sizes` is the roster, not a count of who showed up. A team that never
+    opened the report contributes no rows to the event log, so any team list
+    derived from that log omits exactly the team the report exists to surface.
+    """
+    if not team_sizes:
+        return pd.DataFrame(
+            columns=["team", "licensed_users", "active_users_last_4w", "reach_pct",
+                     "activated_users", "activation_pct", "views", "applies",
+                     "action_rate_pct", "csat", "csat_responses"]
+        )
+    # Anyone using it who is not on the roster is also worth surfacing rather
+    # than dropping - it means the rollout list is out of date.
+    unlisted = sorted(set(events["team"].dropna()) - set(team_sizes)) if len(events) else []
+    if unlisted:
+        log.warning("Teams active but not on the roster: %s", ", ".join(unlisted))
+
+    if events.empty:
+        recent = events
+    else:
+        window_end = events["event_ts"].max()
+        window_start = window_end - pd.Timedelta(weeks=cfg.adoption["active_window_weeks"])
+        recent = events[events["event_ts"] >= window_start]
+
+    team_sizes = dict(team_sizes)
+    for t in unlisted:
+        team_sizes[t] = int(events[events["team"] == t]["user_id"].nunique())
 
     rows = []
     for team, size in team_sizes.items():
@@ -129,17 +181,31 @@ def team_metrics(events: pd.DataFrame, cfg: Config, team_sizes: dict[str, int]) 
 def headline_metrics(
     events: pd.DataFrame, weekly: pd.DataFrame, cfg: Config
 ) -> pd.DataFrame:
+    """Headline metrics, including for a period in which nothing happened.
+
+    "Nobody used it" is a legitimate - and important - state for this report to
+    be in. It must produce zeros and nulls, not an exception.
+    """
     licensed = cfg.adoption["licensed_users"]
-    window_end = events["event_ts"].max()
+    if events.empty:
+        log.warning("No usage events in the period - reporting zeros, not failing")
     win = cfg.adoption["active_window_weeks"]
+    if events.empty:
+        recent = last_week = events
+    else:
+        window_end = events["event_ts"].max()
+        recent = events[events["event_ts"] >= window_end - pd.Timedelta(weeks=win)]
+        last_week = events[events["event_ts"] >= window_end - pd.Timedelta(weeks=1)]
 
-    recent = events[events["event_ts"] >= window_end - pd.Timedelta(weeks=win)]
-    last_week = events[events["event_ts"] >= window_end - pd.Timedelta(weeks=1)]
-
-    views = int((events["event_type"] == "view").sum())
-    applies = int((events["event_type"] == "apply").sum())
-    fb = events[events["event_type"] == "feedback"]["feedback_score"]
-    activated = events[events["event_type"] == "apply"]["user_id"].nunique()
+    views = int((events["event_type"] == "view").sum()) if len(events) else 0
+    applies = int((events["event_type"] == "apply").sum()) if len(events) else 0
+    fb = (
+        events[events["event_type"] == "feedback"]["feedback_score"].dropna()
+        if len(events) else pd.Series(dtype=float)
+    )
+    activated = (
+        events[events["event_type"] == "apply"]["user_id"].nunique() if len(events) else 0
+    )
 
     mau = recent["user_id"].nunique()
     wau = last_week["user_id"].nunique()
@@ -149,7 +215,9 @@ def headline_metrics(
          f"Distinct users active in the last {win} weeks / {licensed} licensed users"),
         ("activation_pct", round(100 * activated / licensed, 1), None,
          "Users who have acted on at least one recommendation / licensed users"),
-        ("action_rate_pct", round(100 * applies / views, 1) if views else 0.0,
+        # No views means the action rate is undefined, not zero - there was
+        # nothing to act on. Reporting 0% would read as "people ignored it".
+        ("action_rate_pct", round(100 * applies / views, 1) if views else None,
          cfg.adoption["target_action_rate_pct"],
          "Recommendations acted on / recommendations viewed"),
         ("csat", round(float(fb.mean()), 2) if len(fb) else None,
@@ -157,18 +225,28 @@ def headline_metrics(
          f"Mean in-report feedback score, 1-5 ({len(fb)} responses)"),
         ("stickiness_pct", round(100 * wau / mau, 1) if mau else 0.0, None,
          "Weekly active / monthly active - habit vs novelty"),
-        ("sessions_per_active_user", float(weekly["sessions_per_active_user"].iloc[-1]), None,
+        ("sessions_per_active_user", _last_week_depth(weekly), None,
          "Sessions per active user in the most recent week"),
     ]
     out = pd.DataFrame(rows, columns=["metric", "value", "target", "definition"])
     out["status"] = [
-        "no target" if pd.isna(t) else ("on track" if v is not None and v >= t else "below target")
+        "no target" if pd.isna(t)
+        else "no data" if v is None or pd.isna(v)
+        else ("on track" if v >= t else "below target")
         for v, t in zip(out["value"], out["target"])
     ]
     for _, r in out.iterrows():
         log.info("  %-26s %8s  target %-6s %s", r["metric"], r["value"],
                  "-" if pd.isna(r["target"]) else r["target"], r["status"])
     return out
+
+
+def _last_week_depth(weekly: pd.DataFrame) -> float | None:
+    """Depth in the most recent week - None if there is no week to report on."""
+    if weekly.empty:
+        return None
+    value = weekly["sessions_per_active_user"].iloc[-1]
+    return None if pd.isna(value) else float(value)
 
 
 def top_viewed_products(events: pd.DataFrame, dim_product: pd.DataFrame, n: int = 10) -> pd.DataFrame:
@@ -189,14 +267,10 @@ def top_viewed_products(events: pd.DataFrame, dim_product: pd.DataFrame, n: int 
 
 def measure(tables: dict[str, pd.DataFrame], cfg: Config) -> dict[str, pd.DataFrame]:
     events = load_events(cfg)
-    team_sizes = events.groupby("team")["user_id"].nunique().to_dict()
-    # Licensed headcount per team, not just the ones who showed up: anyone who
-    # never opened the report is exactly who the reach metric needs to count.
-    roster = {
-        "Category Management": 18, "Merchandising": 14, "Online Trading": 11,
-        "Marketing": 9, "Store Ops": 10,
-    }
-    team_sizes = {t: roster.get(t, n) for t, n in team_sizes.items()}
+    # The roster lives in config.yaml and is the source of truth for both the
+    # denominator and the team list. Nothing here is derived from who happens
+    # to appear in the events.
+    team_sizes = cfg.adoption["roster"]
 
     weekly = weekly_metrics(events, cfg)
     by_team = team_metrics(events, cfg, team_sizes)

@@ -42,6 +42,23 @@ def extract(cfg: Config, source: Path | None = None) -> pd.DataFrame:
     df["stock_code"] = df["stock_code"].str.strip().str.upper()
     df["description"] = df["description"].str.strip()
 
+    if df.empty:
+        raise ValueError(f"Source file {path} contains no rows - nothing to process.")
+    unparsed = int(df["invoice_ts"].isna().sum())
+    if unparsed:
+        # Silent NaT is the classic symptom of a source system changing its date
+        # format. Downstream it looks like missing data rather than a config drift.
+        log.warning(
+            "%s of %s timestamps did not match `extract.date_format` (%s) and became NaT",
+            f"{unparsed:,}", f"{len(df):,}", cfg.extract["date_format"],
+        )
+        if unparsed == len(df):
+            raise ValueError(
+                f"Every timestamp failed to parse with format "
+                f"'{cfg.extract['date_format']}'. The source date format has most "
+                "likely changed - fix `extract.date_format` in config.yaml."
+            )
+
     log.info(
         "Extracted %s rows | %s invoices | %s stock codes | %s -> %s",
         f"{len(df):,}",

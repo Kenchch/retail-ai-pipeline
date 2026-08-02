@@ -23,6 +23,7 @@ reports/*
 !reports/run_metrics.json
 !reports/adoption_dashboard.html
 
-# Workshop deck QA renders (regenerate with soffice + pdftoppm)
-workshop/*.pdf
+# Workshop deck QA renders (regenerate with soffice + pdftoppm). The PDF export
+# is kept: GitHub previews PDFs in the browser and does not preview .pptx, so
+# without it nobody reads the deck without downloading it first.
 workshop/slide-*.jpg
