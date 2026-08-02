@@ -27,3 +27,7 @@ reports/*
 # is kept: GitHub previews PDFs in the browser and does not preview .pptx, so
 # without it nobody reads the deck without downloading it first.
 workshop/slide-*.jpg
+
+# coverage
+.coverage
+htmlcov/
