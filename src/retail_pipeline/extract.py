@@ -33,6 +33,20 @@ def extract(cfg: Config, source: Path | None = None) -> pd.DataFrame:
     )
     df = df.rename(columns=cfg.extract["column_map"])
 
+    # A source system that renames or drops a column is the single most common
+    # way a pipeline like this breaks. Without this check it surfaces as a bare
+    # KeyError three lines later, naming an internal column the reader has never
+    # heard of - which sends whoever is on call into the wrong file.
+    expected = set(cfg.extract["column_map"].values())
+    missing = sorted(expected - set(df.columns))
+    if missing:
+        raise ValueError(
+            f"Source file {path} is missing expected column(s): {', '.join(missing)}.\n"
+            f"Columns found: {', '.join(map(str, df.columns))}\n"
+            "The source schema has most likely changed - update `extract.column_map` "
+            "in config.yaml to map the new names onto the internal ones."
+        )
+
     df["invoice_ts"] = pd.to_datetime(
         df["invoice_ts"], format=cfg.extract["date_format"], errors="coerce"
     )

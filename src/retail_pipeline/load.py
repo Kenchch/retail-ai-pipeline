@@ -38,6 +38,15 @@ def to_warehouse(tables: dict[str, pd.DataFrame], cfg: Config) -> None:
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
         for name, df in tables.items():
+            if df.shape[1] == 0:
+                # `CREATE TABLE x ()` is not valid SQL, so this surfaces as a
+                # bare sqlite3 syntax error pointing at a bracket. A table with
+                # no columns is always an upstream defect - name it here.
+                log.error(
+                    "Table '%s' has no columns - skipping. An empty result must "
+                    "still carry its schema; fix the stage that produced it.", name,
+                )
+                continue
             df.to_sql(name, conn, if_exists="replace", index=False)
         # Indexes on the join keys the BI layer actually filters on.
         cur = conn.cursor()
