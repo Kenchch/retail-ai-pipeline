@@ -30,7 +30,9 @@ from airflow.operators.python import PythonOperator
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from retail_pipeline.adoption import measure  # noqa: E402
 from retail_pipeline.config import Config  # noqa: E402
+from retail_pipeline.dashboard import build as build_dashboard  # noqa: E402
 from retail_pipeline.extract import extract  # noqa: E402
 from retail_pipeline.load import load  # noqa: E402
 from retail_pipeline.quality import run_checks, split_quarantine, write_report  # noqa: E402
@@ -99,9 +101,26 @@ def task_recommend(**_) -> None:
     load({"recommendations": recommend(tables, cfg)}, cfg)
 
 
+def task_adoption(**_) -> None:
+    """Adoption measurement is a separate task, not a step inside the
+    recommendation build, because it fails for entirely different reasons - a
+    missing telemetry extract should not hold back the merchandising data that
+    the morning planogram review depends on."""
+    import pandas as pd
+
+    cfg = Config.load(CONFIG_PATH)
+    tables = {"dim_product": pd.read_parquet(cfg.paths["processed"] / "dim_product.parquet")}
+    adoption = measure(tables, cfg)
+    load(adoption, cfg)
+    build_dashboard(adoption, cfg)
+
+
 with DAG(
     dag_id="retail_ai_pipeline",
-    description="Ingest retail transactions, enforce data quality, publish sales star schema and product recommendations",
+    description=(
+        "Ingest retail transactions, enforce data quality, publish the sales star "
+        "schema and product recommendations, and refresh adoption reporting"
+    ),
     default_args=default_args,
     start_date=datetime(2026, 1, 1),
     schedule="0 4 * * *",   # nightly, after the source system's end-of-day close
@@ -114,5 +133,9 @@ with DAG(
     quality_op = PythonOperator(task_id="data_quality_gate", python_callable=task_quality)
     load_op = PythonOperator(task_id="transform_and_load", python_callable=task_transform_load)
     recommend_op = PythonOperator(task_id="build_recommendations", python_callable=task_recommend)
+    adoption_op = PythonOperator(
+        task_id="measure_adoption", python_callable=task_adoption,
+        trigger_rule="all_done",  # runs even if recommendations failed - the
+    )                             # adoption question is still worth answering
 
-    extract_op >> quality_op >> load_op >> recommend_op
+    extract_op >> quality_op >> load_op >> recommend_op >> adoption_op

@@ -21,6 +21,7 @@ class Config:
     extract: dict[str, Any]
     quality: dict[str, Any]
     recommend: dict[str, Any]
+    adoption: dict[str, Any]
     root: Path = field(default=PROJECT_ROOT)
 
     @classmethod
@@ -35,6 +36,7 @@ class Config:
             extract=raw["extract"],
             quality=raw["quality"],
             recommend=raw["recommend"],
+            adoption=raw.get("adoption", {}),
             root=root,
         )
 

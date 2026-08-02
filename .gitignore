@@ -16,3 +16,7 @@ data/warehouse/*
 # Generated run artefacts
 reports/*
 !reports/.gitkeep
+
+# Workshop deck QA renders (regenerate with soffice + pdftoppm)
+workshop/*.pdf
+workshop/slide-*.jpg

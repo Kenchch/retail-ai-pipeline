@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from .adoption import measure
 from .config import Config, get_logger
+from .dashboard import build as build_dashboard
 from .extract import extract
 from .load import load
 from .quality import run_checks, split_quarantine, write_report
@@ -29,29 +31,35 @@ def run(config_path: str | None = None) -> dict:
     cfg.ensure_dirs()
 
     log.info("=" * 78)
-    log.info("STAGE 1/5  EXTRACT")
+    log.info("STAGE 1/6  EXTRACT")
     raw = extract(cfg)
 
     log.info("=" * 78)
-    log.info("STAGE 2/5  DATA QUALITY")
+    log.info("STAGE 2/6  DATA QUALITY")
     results, flags = run_checks(raw, cfg)
     clean, quarantine = split_quarantine(raw, flags, cfg)
     write_report(results, cfg, len(raw), len(clean), len(quarantine))
 
     log.info("=" * 78)
-    log.info("STAGE 3/5  TRANSFORM (star schema)")
+    log.info("STAGE 3/6  TRANSFORM (star schema)")
     tables = transform(clean)
     tables["quarantine"] = quarantine
     tables["dq_results"] = results
 
     log.info("=" * 78)
-    log.info("STAGE 4/5  LOAD")
+    log.info("STAGE 4/6  LOAD")
     load(tables, cfg)
 
     log.info("=" * 78)
-    log.info("STAGE 5/5  RECOMMEND (frequently bought together)")
+    log.info("STAGE 5/6  RECOMMEND (frequently bought together)")
     recs = recommend(tables, cfg)
     load({"recommendations": recs}, cfg)
+
+    log.info("=" * 78)
+    log.info("STAGE 6/6  ADOPTION (is anyone using it?)")
+    adoption = measure(tables, cfg)
+    load(adoption, cfg)
+    dashboard_path = build_dashboard(adoption, cfg)
 
     elapsed = time.perf_counter() - started
     metrics = {
@@ -73,6 +81,10 @@ def run(config_path: str | None = None) -> dict:
             if len(recs) else 0.0
         ),
         "checks": results.to_dict(orient="records"),
+        "adoption": {
+            r["metric"]: r["value"] for _, r in adoption["adoption_headline"].iterrows()
+        },
+        "adoption_dashboard": dashboard_path,
     }
     out = cfg.paths["reports"] / "run_metrics.json"
     out.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
