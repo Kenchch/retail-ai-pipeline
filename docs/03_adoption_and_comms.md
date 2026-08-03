@@ -84,9 +84,11 @@ puts them in diagnosis mode and answers the question they are actually holding
 **Protect the hands-on 15 minutes.** If you are running late, cut the limits
 segment and email it. Never cut the exercise.
 
-**The exercise row that matters** is a seasonal best-seller with confidence 0.44
-and lift 1.1. Every group has had someone trust it on confidence alone. That
-moment teaches more than any slide.
+**The exercise row that matters** is WHITE METAL LANTERN → WHITE HANGING HEART
+T-LIGHT HOLDER: 63 baskets, confidence 0.28, lift 2.70. It looks like a finding
+until you notice the same t-light holder is recommended for 69 other products —
+it is in a large share of every basket, so it pairs with everything. Every group
+has had someone accept it before spotting that.
 
 **What happened:** weekly reach went 16% → 34% after the week-3 session and 27%
 → 44% after the week-8 session, and both held rather than decaying. A spike that
