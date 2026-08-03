@@ -1,5 +1,9 @@
 pandas>=2.0
+numpy>=1.24
 pyarrow>=12.0
 scikit-learn>=1.3
 PyYAML>=6.0
 pytest>=7.0
+
+# Airflow is NOT required to run the pipeline - dags/ is only read by a
+# scheduler. Install it separately if you want to run the DAG.

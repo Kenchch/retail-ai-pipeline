@@ -25,8 +25,6 @@ import pandas as pd
 
 log = logging.getLogger("pipeline")
 
-SESSION_GAP = pd.Timedelta(minutes=30)
-
 
 def load_events(cfg: dict) -> pd.DataFrame:
     path = cfg["paths"]["usage_events"]

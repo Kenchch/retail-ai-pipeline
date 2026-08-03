@@ -25,13 +25,15 @@ right candidates.
 
 | Product | Recommended | Baskets | Confidence | Lift |
 |---|---|---|---|---|
-| CHILDS GARDEN SPADE PINK | CHILDS GARDEN SPADE BLUE | 40 | 0.66 | 234 |
+| CHILDS GARDEN SPADE PINK | CHILDS GARDEN SPADE BLUE | 40 | 0.85 | 234 |
 
 **Baskets — 40.** How many baskets contained both. This is your sample size. A
 lift of 300 on 8 baskets is noise; the same lift on 200 is a finding. **Read
 this first, every time.**
 
-**Confidence — 0.66.** Of baskets with the pink spade, 66% also had the blue.
+**Confidence — 0.85.** Of baskets with the pink spade, 85% also had the blue.
+Note this is directional: the same pair the other way round (blue → pink) is
+0.66, because blue sells more often on its own.
 
 **Lift — 234.** The pairing is 234× more likely than if the two were unrelated.
 This is the ranking column.
@@ -66,8 +68,11 @@ ever bought them together**.
 
 ## Three things it will get wrong
 
-**It will recommend the free gift.** A promotional item that went in every
-basket for a fortnight pairs with everything from that period.
+**It will over-recommend the best seller.** WHITE HANGING HEART T-LIGHT HOLDER
+is the recommendation for **69 different products** in the current table, at a
+median lift of 2.3. Some of those are genuine; most are just the effect of a
+product that appears in a large share of all baskets. The same happens with any
+promotional item that went into every basket for a fortnight.
 
 **It cannot see the reason.** Bunting and paper plates co-occur because both are
 party purchases, not because bunting drives plate demand. Placing them together
