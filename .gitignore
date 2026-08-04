@@ -6,6 +6,7 @@ __pycache__/
 data/raw/*
 !data/raw/.gitkeep
 data/processed/
+data/staging/
 data/warehouse/
 
 # The two reports ARE committed - a reader should not have to clone and run the

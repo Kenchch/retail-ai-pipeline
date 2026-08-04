@@ -37,7 +37,16 @@ from retail_pipeline.recommend import recommend                  # noqa: E402
 
 
 def _staging(cfg, name: str) -> Path:
-    return cfg["paths"]["processed"] / f"_staging_{name}.parquet"
+    """Hand-off files live OUTSIDE the published layer.
+
+    data/processed is the analytics layer, and anything that enumerates it -
+    a Spark job, a Power BI folder source - treats every parquet in it as a
+    published table. Writing the pre-quality extract there would publish rows
+    the quality gate exists to reject, and would leave them there if the gate
+    stops the run.
+    """
+    cfg["paths"]["staging"].mkdir(parents=True, exist_ok=True)
+    return cfg["paths"]["staging"] / f"{name}.parquet"
 
 
 def task_extract(**_):
@@ -75,6 +84,14 @@ def task_adoption(**_):
     load(measure_adoption(cfg), cfg)
 
 
+def task_clear_staging(**_):
+    """Runs on `all_done`, so the hand-off files are removed whether the run
+    succeeded or the quality gate stopped it."""
+    cfg = load_config()
+    for f in cfg["paths"]["staging"].glob("*.parquet"):
+        f.unlink()
+
+
 with DAG(
     dag_id="retail_ai_pipeline",
     description="Ingest retail transactions, gate on data quality, publish the sales "
@@ -93,5 +110,7 @@ with DAG(
     t4 = PythonOperator(task_id="build_recommendations", python_callable=task_recommend)
     t5 = PythonOperator(task_id="measure_adoption", python_callable=task_adoption,
                         trigger_rule="all_done")
+    t6 = PythonOperator(task_id="clear_staging", python_callable=task_clear_staging,
+                        trigger_rule="all_done")
 
-    t1 >> t2 >> t3 >> t4 >> t5
+    t1 >> t2 >> t3 >> t4 >> t5 >> t6

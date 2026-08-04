@@ -3,7 +3,8 @@
 paths:
   raw: data/raw/online_retail.csv
   usage_events: data/raw/usage_events.csv
-  processed: data/processed
+  processed: data/processed      # published analytics layer
+  staging: data/staging          # DAG hand-off only - never published
   warehouse: data/warehouse/retail.db
   reports: reports
 
