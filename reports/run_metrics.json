@@ -7,10 +7,10 @@
   "recommendations": 17333,
   "catalogue_coverage_pct": 100.0,
   "adoption": {
-    "reach_pct": 74.2,
+    "reach_pct": 75.8,
     "activation_pct": 77.4,
-    "action_rate_pct": 22.9,
-    "csat": 4.23
+    "action_rate_pct": 22.6,
+    "csat": 4.18
   },
-  "runtime_seconds": 11.4
+  "runtime_seconds": 14.2
 }

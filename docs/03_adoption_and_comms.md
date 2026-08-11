@@ -91,8 +91,12 @@ it is in a large share of every basket, so it pairs with everything. Every group
 has had someone accept it before spotting that.
 
 **What happened:** weekly reach went 16% → 34% after the week-3 session and 27%
-→ 44% after the week-8 session, and both held rather than decaying. A spike that
-decays means people looked once, which is not adoption.
+→ 44% after the week-8 session. Only the second one held. The week-3 bump decayed
+immediately — 34% → 26% → 23% — and reach did not reach 34% again until the
+second workshop five weeks later. The week-8 bump held and then grew (37%, 45%,
+45%, 42% over the following four weeks). A spike that decays means people looked
+once, which is not adoption; by that test the first workshop did not convert and
+the second did. The weekly table in `reports/adoption_report.md` is the source.
 
 ---
 
@@ -113,8 +117,10 @@ Data & AI. Kept to 300 words, because a 900-word update is not read.*
   than quietly retiring the target.
 
 **What we learned.** The two workshops did more than any email — weekly reach
-16% → 34% after the first and 27% → 44% after the second, and both held. A third
-runs in July.
+16% → 34% after the first and 27% → 44% after the second. Only the second held;
+the first decayed to 23% within a fortnight. The difference we can point to is
+that the second session used the team's own catalogue data rather than the demo
+set, so the follow-up ran in July with that format.
 
 **Where it isn't working.** Store Ops is at 50% reach and 3.5 on feedback, the
 only team below both. The comments are clear that the view is built around

@@ -25,6 +25,7 @@ import logging
 from collections import Counter
 from itertools import combinations
 
+import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
@@ -108,9 +109,17 @@ def content_fallback(dim_product: pd.DataFrame, covered: set[str], cfg: dict) ->
             if dst == src:
                 continue
             rank += 1
+            # NaN, not 0.0. Support, confidence and lift are co-occurrence
+            # statistics and are undefined for a text-similarity match - there
+            # is no basket evidence to compute them from. Writing 0.0 states
+            # "measured, and the worst possible value", which sorts every
+            # content row to the bottom of a lift-ranked view and reads as a
+            # failed recommendation rather than a differently-derived one.
+            # Same rule the adoption report states: no data shows as blank,
+            # never as zero.
             rows.append({"stock_code": src, "recommended_stock_code": dst, "rank": rank,
-                         "method": "content_tfidf", "pair_baskets": 0,
-                         "support": 0.0, "confidence": 0.0, "lift": 0.0})
+                         "method": "content_tfidf", "pair_baskets": pd.NA,
+                         "support": np.nan, "confidence": np.nan, "lift": np.nan})
             if rank >= top_n:
                 break
     log.info("Content fallback covered %s cold-start products", f"{len(cold):,}")
@@ -137,6 +146,21 @@ def recommend(tables: dict[str, pd.DataFrame], cfg: dict) -> pd.DataFrame:
                        on="recommended_stock_code", how="left"))
     for col in ("support", "confidence", "lift"):
         recs[col] = recs[col].round(5)
+
+    # Coverage has two routes and a product can miss both: no co-purchase rule
+    # AND a description the content fallback cannot use (it drops "UNKNOWN").
+    # This run happens to reach 100%, which makes the gap invisible unless it
+    # is counted - and the acceptance criterion in the engineering brief is
+    # >=90%, so silence here would be indistinguishable from success.
+    uncovered = set(dim_product["stock_code"]) - set(recs["stock_code"])
+    if uncovered:
+        blank = set(dim_product.loc[dim_product["description"] == "UNKNOWN", "stock_code"])
+        log.warning(
+            "%s of %s products have no recommendation by either route "
+            "(%s of them also have no usable description)",
+            f"{len(uncovered):,}", f"{len(dim_product):,}",
+            f"{len(uncovered & blank):,}",
+        )
 
     log.info("Recommendations %s rows | %.1f%% of the catalogue covered",
              f"{len(recs):,}", 100 * recs["stock_code"].nunique() / len(dim_product))

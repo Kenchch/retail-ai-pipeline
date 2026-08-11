@@ -78,8 +78,17 @@ def task_recommend(**_):
 
 
 def task_adoption(**_):
-    """Separate task with `all_done`: a missing telemetry extract must not hold
-    back the merchandising data the morning planogram review depends on."""
+    """Adoption runs as its own root branch, parallel to the merchandising
+    chain, because it reads the usage telemetry and nothing the extract
+    produces. Being a separate branch is what makes the two independent in both
+    directions: a missing telemetry extract cannot hold back the merchandising
+    data the morning planogram review depends on, and - the direction that
+    actually bites - a failed quality gate cannot let adoption publish over the
+    warehouse on a night when the rest of the run was deliberately stopped.
+
+    It must NOT be a downstream task with `trigger_rule="all_done"`. Downstream
+    of the gate, `all_done` means "run even though the gate failed", and load()
+    writes with if_exists="replace"."""
     cfg = load_config()
     load(measure_adoption(cfg), cfg)
 
@@ -108,9 +117,13 @@ with DAG(
     t2 = PythonOperator(task_id="data_quality_gate", python_callable=task_quality)
     t3 = PythonOperator(task_id="transform_and_load", python_callable=task_transform_load)
     t4 = PythonOperator(task_id="build_recommendations", python_callable=task_recommend)
-    t5 = PythonOperator(task_id="measure_adoption", python_callable=task_adoption,
-                        trigger_rule="all_done")
+    t5 = PythonOperator(task_id="measure_adoption", python_callable=task_adoption)
     t6 = PythonOperator(task_id="clear_staging", python_callable=task_clear_staging,
                         trigger_rule="all_done")
 
-    t1 >> t2 >> t3 >> t4 >> t5 >> t6
+    # Two independent branches. The merchandising chain stops at the gate;
+    # adoption reads telemetry and is unaffected either way. Only the staging
+    # cleanup joins them, and it keeps `all_done` because temp files must be
+    # removed whether the run succeeded or the gate stopped it.
+    t1 >> t2 >> t3 >> t4
+    [t4, t5] >> t6

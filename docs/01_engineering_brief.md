@@ -11,8 +11,9 @@ If a requirement below is not testable, that is a defect in this brief.
 
 Category managers set adjacencies, bundles and "customers also bought" slots
 from experience. That works for the top 200 lines and breaks down across a
-3,803-line catalogue — nobody holds 1.4 million potential pairings in their
-head. Cross-sell decisions concentrate on products people already know sell,
+3,803-line catalogue — 7.2 million pairs are possible (3,803 × 3,802 / 2) and
+1.4 million of them actually occur in the same basket at least once, which is
+the number the pipeline counts and logs. Nobody holds either in their head. Cross-sell decisions concentrate on products people already know sell,
 and affinities in the long tail are never found.
 
 ## Scope
@@ -85,7 +86,9 @@ disappearing from the report.
 ## Non-functional
 
 All thresholds and the team roster in `config.yaml`; no magic numbers in code.
-Full refresh inside the overnight window (currently ~25 s). Machine-readable run
+Full refresh inside the overnight window (14.2 s on the reference run; the
+authoritative figure is `runtime_seconds` in `reports/run_metrics.json`, which
+the run writes itself). Machine-readable run
 metrics plus a human-readable quality report per run.
 
 ## Open questions
