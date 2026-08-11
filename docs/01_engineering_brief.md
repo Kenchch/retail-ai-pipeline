@@ -13,8 +13,9 @@ Category managers set adjacencies, bundles and "customers also bought" slots
 from experience. That works for the top 200 lines and breaks down across a
 3,803-line catalogue — 7.2 million pairs are possible (3,803 × 3,802 / 2) and
 1.4 million of them actually occur in the same basket at least once, which is
-the number the pipeline counts and logs. Nobody holds either in their head. Cross-sell decisions concentrate on products people already know sell,
-and affinities in the long tail are never found.
+the figure the pipeline counts and logs. Nobody holds either in their head.
+Cross-sell decisions concentrate on products people already know sell, and
+affinities in the long tail are never found.
 
 ## Scope
 
@@ -86,10 +87,11 @@ disappearing from the report.
 ## Non-functional
 
 All thresholds and the team roster in `config.yaml`; no magic numbers in code.
-Full refresh inside the overnight window (14.2 s on the reference run; the
-authoritative figure is `runtime_seconds` in `reports/run_metrics.json`, which
-the run writes itself). Machine-readable run
-metrics plus a human-readable quality report per run.
+Full refresh inside the overnight window — 12.4 s on the reference run, with
+`runtime_seconds` in `reports/run_metrics.json` as the authoritative figure,
+written by the run itself. Machine-readable run metrics plus a human-readable
+quality report per run, and a sha256 of each raw input so any published number
+can be traced back to the file that produced it.
 
 ## Open questions
 

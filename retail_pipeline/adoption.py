@@ -133,7 +133,7 @@ def headline_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
         "no target" if pd.isna(t) else
         "no data" if v is None or pd.isna(v) else
         ("on track" if v >= t else "below target")
-        for v, t in zip(out["value"], out["target"])
+        for v, t in zip(out["value"], out["target"], strict=True)
     ]
     for r in out.itertuples():
         log.info("  %-16s %7s  target %-5s  %s", r.metric,
