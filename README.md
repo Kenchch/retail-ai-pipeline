@@ -9,7 +9,7 @@ measurement wired into the pipeline itself.
 ```bash
 pip install -r requirements.txt
 python scripts/get_data.py           # ~45 MB of transactions + usage telemetry
-python -m retail_pipeline.pipeline   # ~30 s end to end
+python -m retail_pipeline.pipeline   # ~15 s end to end
 pytest -q                            # 13 tests
 ```
 
@@ -24,7 +24,7 @@ Source: UCI **Online Retail** — a UK online giftware retailer, Dec 2010 – De
 | Loaded | 522,566 line items · 3,803 products · 4,334 customers · 374 days (305 traded) |
 | Recommendations | 17,333 rows covering the full catalogue |
 | Adoption | 62 licensed users, 5 teams, 12 weeks |
-| Runtime | ~30 s |
+| Runtime | 14.2 s — `runtime_seconds` in `reports/run_metrics.json` |
 
 The strongest associations are ones a merchandiser would expect — the cheapest
 sanity check there is:
