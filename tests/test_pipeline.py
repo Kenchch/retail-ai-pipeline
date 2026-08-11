@@ -70,7 +70,7 @@ def events():
 
 def test_every_rule_fires_exactly_once(sample, cfg):
     _, _, results = check_quality(sample, cfg)
-    assert dict(zip(results["check"], results["failed_rows"])) == {
+    assert dict(zip(results["check"], results["failed_rows"], strict=True)) == {
         "duplicate_line_items": 1, "missing_invoice_key": 0, "cancelled_invoice": 1,
         "non_positive_quantity": 1, "non_positive_price": 1, "price_outlier": 1,
         "non_product_stock_code": 1, "missing_description": 1, "missing_customer_id": 1,
@@ -82,7 +82,8 @@ def test_quarantine_keeps_the_reasons_and_the_flagged_rows(sample, cfg):
     clean, quarantine, _ = check_quality(sample, cfg)
     assert len(clean) == 3 and len(quarantine) == 6
     assert "cancelled_invoice" in dict(zip(quarantine["invoice_no"],
-                                           quarantine["reasons"]))["C536379"]
+                                           quarantine["reasons"],
+                                           strict=True))["C536379"]
     # A guest checkout with a blank description is still a real sale.
     assert "536384" in set(clean["invoice_no"])
 

@@ -282,6 +282,24 @@ def _date_dimension(d: pd.DataFrame) -> pd.DataFrame:
 # 4. Load
 # --------------------------------------------------------------------------- #
 
+def _input_fingerprint(cfg: dict) -> dict:
+    """sha256 + row count of each raw input, for run-to-run traceability."""
+    import hashlib
+
+    out = {}
+    for key in ("raw", "usage_events"):
+        p = Path(cfg["paths"][key])
+        name = p.name
+        if not p.exists():
+            continue
+        data = p.read_bytes()
+        out[name] = {
+            "sha256": hashlib.sha256(data).hexdigest()[:16],
+            "rows": data.count(b"\n") - 1,
+        }
+    return out
+
+
 def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
     """Parquet for the analytics layer, SQLite as a zero-infrastructure stand-in
     for the serving database. Swapping SQLite for Azure SQL is a connection
@@ -334,6 +352,14 @@ def run(config_path: str | None = None) -> dict:
         "catalogue_coverage_pct": round(
             100 * recs["stock_code"].nunique() / len(tables["dim_product"]), 1),
         "adoption": {r.metric: r.value for r in adoption["adoption_headline"].itertuples()},
+        # Fingerprint the telemetry input. generate_events() in scripts/get_data.py
+        # is seeded and deterministic, but the pipeline reads whatever
+        # usage_events.csv happens to be on disk -- so a file left over from an
+        # older revision produces a self-consistent report that no one can
+        # reproduce, and any doc quoting it silently goes stale. Recording the
+        # digest makes "which input produced this report" answerable from the
+        # report itself.
+        "inputs": _input_fingerprint(cfg),
         "runtime_seconds": round(time.perf_counter() - started, 1),
     }
     (cfg["paths"]["reports"] / "run_metrics.json").write_text(
