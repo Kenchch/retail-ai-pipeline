@@ -91,7 +91,11 @@ Full refresh inside the overnight window — 12.4 s on the reference run, with
 `runtime_seconds` in `reports/run_metrics.json` as the authoritative figure,
 written by the run itself. Machine-readable run metrics plus a human-readable
 quality report per run, and a sha256 of each raw input so any published number
-can be traced back to the file that produced it.
+can be traced back to the file that produced it. For the telemetry the digest
+covers the metric-bearing columns rather than the whole file, because
+`stock_code` is drawn from the catalogue when one exists and from synthetic
+codes when it does not — a difference no metric reads. A provenance check that
+fires on a legitimate first run teaches people to ignore it.
 
 ## Open questions
 

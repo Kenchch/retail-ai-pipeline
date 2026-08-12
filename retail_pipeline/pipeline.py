@@ -282,20 +282,49 @@ def _date_dimension(d: pd.DataFrame) -> pd.DataFrame:
 # 4. Load
 # --------------------------------------------------------------------------- #
 
+# Columns whose contents the published numbers actually depend on. Hashing the
+# whole file over-reports for usage_events.csv: generate_events() draws
+# stock_code from dim_product.parquet when it exists and from synthetic SKUxxxxx
+# codes when it does not, so a first run on a clean clone produces a different
+# byte stream while every adoption metric is identical - no metric reads
+# stock_code. A digest that changes when nothing measurable changed is a false
+# alarm, and a false alarm in a provenance check is worse than none, because it
+# trains the reader to ignore it.
+_FINGERPRINT_COLS = {
+    "usage_events": ["event_ts", "user_id", "team", "event_type", "feedback_score"],
+}
+
+
 def _input_fingerprint(cfg: dict) -> dict:
-    """sha256 + row count of each raw input, for run-to-run traceability."""
+    """sha256 + row count of each raw input, for run-to-run traceability.
+
+    Scoped to the metric-bearing columns where they differ from the file, so
+    the digest answers "could this input have produced different numbers?"
+    rather than "is this byte-identical to some other run?".
+    """
     import hashlib
 
     out = {}
     for key in ("raw", "usage_events"):
         p = Path(cfg["paths"][key])
-        name = p.name
         if not p.exists():
             continue
-        data = p.read_bytes()
-        out[name] = {
-            "sha256": hashlib.sha256(data).hexdigest()[:16],
-            "rows": data.count(b"\n") - 1,
+
+        cols = _FINGERPRINT_COLS.get(key)
+        if cols:
+            # dtype=str + keep_default_na=False: hash the text as written, so
+            # the digest cannot shift on a pandas dtype or NA-formatting change.
+            df = pd.read_csv(p, usecols=cols, dtype=str, keep_default_na=False)
+            payload = df[cols].to_csv(index=False).encode()
+            rows = len(df)
+        else:
+            payload = p.read_bytes()
+            rows = payload.count(b"\n") - 1
+
+        out[p.name] = {
+            "sha256": hashlib.sha256(payload).hexdigest()[:16],
+            "rows": rows,
+            **({"columns_hashed": cols} if cols else {}),
         }
     return out
 
