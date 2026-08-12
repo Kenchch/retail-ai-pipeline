@@ -315,7 +315,12 @@ def _input_fingerprint(cfg: dict) -> dict:
             # dtype=str + keep_default_na=False: hash the text as written, so
             # the digest cannot shift on a pandas dtype or NA-formatting change.
             df = pd.read_csv(p, usecols=cols, dtype=str, keep_default_na=False)
-            payload = df[cols].to_csv(index=False).encode()
+            # Sort before hashing so the digest describes the *content* of the
+            # telemetry, not the order it happens to sit in. Row order is not a
+            # property any metric depends on, so letting it move the digest
+            # would be another false alarm of the kind this check exists to
+            # avoid. kind="stable" so the sort itself is deterministic.
+            payload = df[cols].sort_values(cols, kind="stable").to_csv(index=False).encode()
             rows = len(df)
         else:
             payload = p.read_bytes()

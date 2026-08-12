@@ -103,7 +103,22 @@ def generate_events() -> None:
                                  int(min(5, max(1, round(rng.gauss(mu, 0.9)))))))
 
     df = pd.DataFrame(rows, columns=["event_ts", "user_id", "team", "event_type",
-                                     "stock_code", "feedback_score"]).sort_values("event_ts")
+                                     "stock_code", "feedback_score"])
+
+    # kind="stable": 1,395 of these rows share a timestamp with another row, and
+    # the default quicksort gives no ordering guarantee among ties. It happens
+    # to be reproducible on one pandas/numpy build; that is an implementation
+    # accident, not a contract. A generated file with a seeded RNG should have a
+    # row order that is pinned here, at the point of writing, rather than left
+    # to whatever the sort does on the reader's machine.
+    df = df.sort_values("event_ts", kind="stable")
+
+    # Int64, not float: feedback_score is None for view/apply rows, which forces
+    # float64 and writes "5.0". Older pandas writes "5" for the same data, so
+    # the file's bytes -- and any digest over them -- would depend on the writer's
+    # version. The nullable integer type writes "5" and "" on every version.
+    df["feedback_score"] = df["feedback_score"].astype("Int64")
+
     df.to_csv(EVENTS, index=False)
     print(f"Wrote {len(df):,} usage events for {df['user_id'].nunique()} users -> {EVENTS.name}")
 
