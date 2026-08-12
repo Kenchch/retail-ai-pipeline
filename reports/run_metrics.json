@@ -18,7 +18,7 @@
       "rows": 541909
     },
     "usage_events.csv": {
-      "sha256": "b3d8a7203d8e1306",
+      "sha256": "3912b077a46d0540",
       "rows": 1841,
       "columns_hashed": [
         "event_ts",
@@ -29,5 +29,5 @@
       ]
     }
   },
-  "runtime_seconds": 12.0
+  "runtime_seconds": 12.8
 }
