@@ -13,6 +13,7 @@ import json
 import logging
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -344,15 +345,29 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
 
     for name, df in tables.items():
         df.to_parquet(out / f"{name}.parquet", index=False, compression="snappy")
-    with sqlite3.connect(cfg["paths"]["warehouse"]) as conn:
-        for name, df in tables.items():
-            df.to_sql(name, conn, if_exists="replace", index=False)
-        for stmt in ("CREATE INDEX IF NOT EXISTS ix_fact_stock ON fact_sales(stock_code)",
-                     "CREATE INDEX IF NOT EXISTS ix_fact_date ON fact_sales(date_key)"):
-            try:
-                conn.execute(stmt)
-            except sqlite3.OperationalError:
-                pass
+
+    # timeout: the DAG runs measure_adoption as a branch parallel to the
+    # merchandising chain, so two tasks can call load() against this file at
+    # once. Writing the star schema holds the write lock for ~4 s, and the
+    # sqlite3 default timeout is 5 s - a margin thin enough that a slower disk
+    # or a larger extract turns into "database is locked". WAL lets the readers
+    # through and the explicit timeout gives the writers room to queue.
+    with closing(sqlite3.connect(cfg["paths"]["warehouse"], timeout=60.0)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")     # outside any transaction
+        with conn:                                  # commit/rollback as one unit
+            for name, df in tables.items():
+                df.to_sql(name, conn, if_exists="replace", index=False)
+            for stmt in ("CREATE INDEX IF NOT EXISTS ix_fact_stock ON fact_sales(stock_code)",
+                         "CREATE INDEX IF NOT EXISTS ix_fact_date ON fact_sales(date_key)"):
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError as exc:
+                    # Only "the table isn't here yet" is expected - the adoption
+                    # branch legitimately runs before fact_sales exists. A lock
+                    # or disk error is not, and swallowing it here would hide a
+                    # failed write behind a successful-looking run.
+                    if "no such table" not in str(exc):
+                        raise
     log.info("Loaded %s tables to Parquet and SQLite", len(tables))
 
 

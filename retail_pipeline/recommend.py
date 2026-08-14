@@ -41,8 +41,21 @@ COLUMNS = ["stock_code", "description", "recommended_stock_code",
 
 def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     c = cfg["recommend"]
+    # No rows is a shape to report, not to crash on. The pipeline's own path
+    # cannot reach here empty (transform() raises on an empty frame first, and
+    # an empty fact_sales read back from Parquet keeps its `string` dtype and
+    # would survive anyway), but a frame carrying no dtype information comes
+    # back from the groupby as float64, and .str on that raises an
+    # AttributeError naming the dtype rather than the empty input.
+    if fact.empty:
+        log.warning("fact_sales is empty - no baskets to mine")
+        return pd.DataFrame()
+
     baskets = fact.groupby("invoice_no")["stock_code"].apply(lambda s: sorted(set(s)))
-    sizes = baskets.str.len()
+    # .map(len), not .str.len(): .str needs pandas to have inferred a string or
+    # object dtype, which it cannot always do from a group result. len() works
+    # on the lists regardless.
+    sizes = baskets.map(len)
     baskets = baskets[(sizes >= 2) & (sizes <= c["max_basket_size"])]
 
     items: Counter = Counter()

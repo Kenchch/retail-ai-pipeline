@@ -150,6 +150,26 @@ def test_lift_is_computed_correctly(cfg):
                 & (recs["method"] == "co_purchase")].empty
 
 
+def test_an_empty_fact_table_returns_the_schema_rather_than_raising(cfg):
+    """`test_an_empty_result_still_has_its_schema` below covers "baskets exist
+    but no rule cleared the thresholds". This covers the other empty: no rows.
+
+    The failure this guards against is dtype-dependent, which is what makes it
+    worth a test rather than a comment. An empty fact_sales read back from
+    Parquet keeps its `string` dtype and works fine, so the pipeline's own path
+    is safe. But an empty frame that carries no dtype information - the shape a
+    hand-built fixture, a hand-written recovery script, or a non-Parquet
+    hand-off produces - comes back from the groupby as float64, and the .str
+    accessor then raises an AttributeError naming that dtype instead of naming
+    the empty input.
+    """
+    empty = pd.DataFrame({"invoice_no": [], "stock_code": []})   # -> float64
+    assert empty["stock_code"].dtype == "float64", "fixture must be dtype-less"
+    recs = recommend({"fact_sales": empty,
+                      "dim_product": pd.DataFrame({"stock_code": [], "description": []})}, cfg)
+    assert recs.empty and list(recs.columns) == COLUMNS
+
+
 def test_an_empty_result_still_has_its_schema(cfg):
     """A zero-column frame is not "no recommendations" - it is a shape no
     consumer can read, and it makes SQLite fail on `CREATE TABLE x ()`."""
