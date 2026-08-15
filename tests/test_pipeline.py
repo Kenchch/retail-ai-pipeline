@@ -7,11 +7,15 @@ regresses — bad rows just start flowing into the warehouse, which is why the
 tests exist.
 """
 
+import os
+
 import pandas as pd
 import pytest
 
 from retail_pipeline.adoption import headline_metrics, team_metrics, weekly_metrics
-from retail_pipeline.pipeline import CHECKS, check_quality, extract, load_config, transform
+from retail_pipeline.pipeline import (
+    CHECKS, _input_fingerprint, check_quality, extract, load_config, transform,
+)
 from retail_pipeline.recommend import COLUMNS, recommend
 
 HEADER = ("InvoiceNo,StockCode,Description,Quantity,InvoiceDate,"
@@ -231,3 +235,40 @@ def test_no_usage_at_all_reports_zeros_rather_than_failing(cfg):
     assert h.loc["reach_pct", "value"] == 0.0
     assert len(t) == len(cfg["adoption"]["roster"])   # every team still listed
     assert weekly_metrics(empty, cfg).empty
+
+
+# --- provenance ------------------------------------------------------------ #
+
+def test_the_input_digest_is_the_same_on_windows_and_linux(cfg, tmp_path):
+    """The digest exists to answer "could this input have produced different
+    numbers?". It has to be portable to answer that at all.
+
+    to_csv defaults its lineterminator to os.linesep - for a returned string as
+    much as for a written file - so without an explicit terminator the same
+    telemetry hashes one way on Windows (CRLF) and another on Linux (LF). A dev
+    box and a CI runner then disagree permanently on byte-identical data, and
+    the check reads as "the input changed" when only the OS did.
+    """
+    events = tmp_path / "usage_events.csv"
+    events.write_text(
+        "event_ts,user_id,team,event_type,stock_code,feedback_score\n"
+        "2026-04-06 10:00:00,U1,Category Management,view,S1,\n"
+        "2026-04-06 10:05:00,U1,Category Management,apply,S1,\n"
+        "2026-04-07 09:10:00,U2,Merchandising,feedback,,5\n",
+        encoding="utf-8",
+    )
+    cfg["paths"] = dict(cfg["paths"], usage_events=events, raw=tmp_path / "absent.csv")
+
+    real = os.linesep
+    try:
+        digests = {}
+        for label, sep in (("LF", "\n"), ("CRLF", "\r\n")):
+            os.linesep = sep
+            digests[label] = _input_fingerprint(cfg)["usage_events.csv"]["sha256"]
+    finally:
+        os.linesep = real
+
+    assert digests["LF"] == digests["CRLF"], (
+        f"digest depends on os.linesep: LF gave {digests['LF']}, "
+        f"CRLF gave {digests['CRLF']}"
+    )

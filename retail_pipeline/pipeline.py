@@ -321,7 +321,18 @@ def _input_fingerprint(cfg: dict) -> dict:
             # property any metric depends on, so letting it move the digest
             # would be another false alarm of the kind this check exists to
             # avoid. kind="stable" so the sort itself is deterministic.
-            payload = df[cols].sort_values(cols, kind="stable").to_csv(index=False).encode()
+            # lineterminator="\n" is load-bearing, not tidiness. to_csv defaults
+            # it to os.linesep - for a returned string as much as for a written
+            # file - so the same telemetry hashes to one value on Windows and a
+            # different one on Linux, purely from CRLF vs LF in the payload.
+            # That makes the digest answer "which OS ran this?" on top of "could
+            # this input have produced different numbers?", and the first
+            # question drowns out the second: a Windows dev and a Linux CI run
+            # disagree forever on byte-identical data. Pinning the terminator is
+            # what makes the digest portable, which is the only way it can serve
+            # as a provenance record at all.
+            payload = (df[cols].sort_values(cols, kind="stable")
+                       .to_csv(index=False, lineterminator="\n").encode())
             rows = len(df)
         else:
             payload = p.read_bytes()
