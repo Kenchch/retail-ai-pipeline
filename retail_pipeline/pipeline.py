@@ -2,9 +2,13 @@
 
 Run it with `python -m retail_pipeline.pipeline`.
 
-The four stages are separate functions so the Airflow DAG in dags/ can schedule
+The stages above are separate functions so the Airflow DAG in dags/ can schedule
 them as separate tasks - per-stage retries, and a failure that points at the
 stage that broke rather than at "the pipeline".
+
+`run()` below drives the full refresh, which is these four plus recommend and
+adoption from the sibling modules - hence the 1/5..5/5 progress markers, which
+count data quality and the star-schema build as one step each.
 """
 
 from __future__ import annotations

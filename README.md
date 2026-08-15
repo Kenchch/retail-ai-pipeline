@@ -43,7 +43,7 @@ Outputs: [`reports/data_quality_report.md`](reports/data_quality_report.md) ·
 extract → data quality → star schema → load → recommend → adoption
 ```
 
-Five stages, three modules, scheduled as six Airflow tasks
+Three modules, scheduled as six Airflow tasks
 ([`dags/`](dags/retail_pipeline_dag.py)) so a failure names the stage that broke.
 
 **Data quality (9 rules, 4 dimensions).** Cancellations, non-positive quantities
