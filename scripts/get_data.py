@@ -119,7 +119,13 @@ def generate_events() -> None:
     # version. The nullable integer type writes "5" and "" on every version.
     df["feedback_score"] = df["feedback_score"].astype("Int64")
 
-    df.to_csv(EVENTS, index=False)
+    # lineterminator="\n" for the same reason as the Int64 cast above: to_csv
+    # otherwise defaults it to os.linesep, so this file lands as CRLF on Windows
+    # and LF on Linux from an identical seed. The fingerprint in pipeline.py no
+    # longer depends on that (it pins its own terminator), but "a seeded
+    # generator produces the same file everywhere" is the property this function
+    # claims, and one os.linesep is all it takes to lose it.
+    df.to_csv(EVENTS, index=False, lineterminator="\n")
     print(f"Wrote {len(df):,} usage events for {df['user_id'].nunique()} users -> {EVENTS.name}")
 
 
