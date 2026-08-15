@@ -22,7 +22,10 @@ nothing.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import random
+import shutil
 import sys
 import urllib.request
 from datetime import datetime, timedelta
@@ -50,14 +53,85 @@ BEHAVIOUR = {
 CURVE = {1: .35, 2: .50, 3: .72, 4: .80, 5: .86, 6: .62,
          7: .80, 8: 1.0, 9: 1.06, 10: 1.10, 11: 1.08, 12: 1.12}
 
+# The mirror serves one fixed revision of the UCI file. Pinning its digest is
+# what turns "the download finished" into "the download is the file the
+# published numbers were computed from" - see _fetch below for why the first
+# does not imply the second.
+EXPECTED_SHA256 = "a2f79bbdd4463df6db8a3f5a50b9c980ae8f645a370bf5e2c0d6097f9e817b05"
+EXPECTED_BYTES = 45_038_760
+DOWNLOAD_TIMEOUT_S = 60
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _fetch(url: str, dest: Path) -> None:
+    """Download to a sidecar, verify, then rename into place.
+
+    Writing straight to `dest` is what makes a half-download durable. Both
+    truncation modes were reproduced against a local server:
+
+    * server sends no Content-Length and closes early -> urlretrieve returns
+      *normally*, no exception at all;
+    * server sends an honest Content-Length and closes early (what this mirror
+      actually does) -> ContentTooShortError is raised, but the partial file is
+      NOT removed.
+
+    Either way a truncated CSV ends up at the final path, and download()'s
+    exists() check then makes it permanent: every later run prints "Already
+    present" and re-publishes from it. Nothing downstream catches this - a
+    20 MB truncation still quarantines at 3.70%, far under the 30% ceiling, so
+    the gate passes and the run exits 0 having silently dropped 55% of the
+    data. Recommendations are ratios, so they do not come out smaller, they
+    come out *different*, at the same apparent confidence.
+
+    A `.part` sidecar plus a digest check makes the failure loud and, crucially,
+    leaves no artefact behind for the next run to trust.
+    """
+    part = dest.with_name(dest.name + ".part")
+    part.unlink(missing_ok=True)
+    try:
+        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as resp, \
+                part.open("wb") as out:
+            shutil.copyfileobj(resp, out)
+
+        got = part.stat().st_size
+        if got != EXPECTED_BYTES:
+            raise OSError(
+                f"{dest.name}: expected {EXPECTED_BYTES:,} bytes, got {got:,}. "
+                "The download was truncated or the mirror changed; nothing was published."
+            )
+        digest = _sha256(part)
+        if digest != EXPECTED_SHA256:
+            raise OSError(
+                f"{dest.name}: sha256 {digest[:16]} does not match the expected "
+                f"{EXPECTED_SHA256[:16]}. The mirror's contents changed; update "
+                "EXPECTED_SHA256/EXPECTED_BYTES deliberately rather than publishing "
+                "from an unrecognised file."
+            )
+        os.replace(part, dest)          # atomic: dest is either old or complete
+    finally:
+        part.unlink(missing_ok=True)    # never leave a partial for the next run
+
 
 def download() -> None:
     TRANSACTIONS.parent.mkdir(parents=True, exist_ok=True)
     if TRANSACTIONS.exists():
-        print(f"Already present: {TRANSACTIONS.name}")
-        return
+        # Verify rather than assume. An existing file may be a truncation left
+        # by an older revision of this script, and "it is on disk" was exactly
+        # the assumption that made such a file permanent.
+        if _sha256(TRANSACTIONS) == EXPECTED_SHA256:
+            print(f"Already present and verified: {TRANSACTIONS.name}")
+            return
+        print(f"{TRANSACTIONS.name} does not match the expected digest - re-downloading")
+        TRANSACTIONS.unlink()
     print(f"Downloading -> {TRANSACTIONS}")
-    urllib.request.urlretrieve(URL, TRANSACTIONS)
+    _fetch(URL, TRANSACTIONS)
 
 
 def generate_events() -> None:

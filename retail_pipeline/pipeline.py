@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
 from contextlib import closing
@@ -186,6 +187,15 @@ def check_quality(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFra
     log.info("Quarantined %s of %s rows (%.2f%%)", f"{int(failed.sum()):,}", f"{len(df):,}",
              100 * rate)
     if rate > cfg["quality"]["max_quarantine_rate"]:
+        # Write the report BEFORE raising. The gate's message says "investigate
+        # the source extract", and this report is the artefact an investigator
+        # opens to do that - per-rule counts and percentages. Raising first left
+        # the previous run's green numbers in place, so the one run that needed
+        # the report was the only run that did not produce it, and nothing in
+        # the file said the run had failed at all.
+        write_quality_report(results, cfg, len(df), len(clean), len(quarantine),
+                             gate_failed=True, rate=rate,
+                             ceiling=cfg["quality"]["max_quarantine_rate"])
         # Fail before loading, so a broken upstream extract leaves last night's
         # published data intact rather than replacing it with something thinner.
         raise ValueError(
@@ -195,13 +205,24 @@ def check_quality(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFra
     return clean, quarantine, results
 
 
-def write_quality_report(results: pd.DataFrame, cfg: dict, n_in: int, n_out: int, n_q: int) -> None:
+def write_quality_report(results: pd.DataFrame, cfg: dict, n_in: int, n_out: int, n_q: int,
+                         *, gate_failed: bool = False, rate: float | None = None,
+                         ceiling: float | None = None) -> None:
     pct = 100 * n_q / n_in if n_in else 0.0
-    lines = [
-        "# Data quality report", "",
+    lines = ["# Data quality report", ""]
+    if gate_failed:
+        # State the outcome at the top. A reader who sees only the table cannot
+        # tell a published run from a rejected one.
+        lines += [
+            f"> **GATE FAILED - NOTHING WAS PUBLISHED.** Quarantine rate {rate:.2%} "
+            f"exceeds the {ceiling:.0%} ceiling. The figures below describe the "
+            "*rejected* extract; the warehouse still holds the previous run's data.",
+            "",
+        ]
+    lines += [
         f"- Rows read: **{n_in:,}**",
         f"- Quarantined (failed a blocking rule): **{n_q:,}** ({pct:.2f}%)",
-        f"- Loaded: **{n_out:,}**", "",
+        f"- {'Would have loaded' if gate_failed else 'Loaded'}: **{n_out:,}**", "",
         "| Check | Dimension | Blocking | Failed | % | What it means |",
         "|---|---|---|---|---|---|",
     ]
@@ -350,16 +371,39 @@ def _input_fingerprint(cfg: dict) -> dict:
     return out
 
 
+_INDEXES = ("CREATE INDEX IF NOT EXISTS ix_fact_stock ON fact_sales(stock_code)",
+            "CREATE INDEX IF NOT EXISTS ix_fact_date ON fact_sales(date_key)")
+
+
 def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
-    """Parquet for the analytics layer, SQLite as a zero-infrastructure stand-in
-    for the serving database. Swapping SQLite for Azure SQL is a connection
-    string; everything goes through pandas."""
+    """Publish to Parquet and SQLite, staging both so a mid-load failure cannot
+    leave the two layers describing different runs.
+
+    The guarantee, stated precisely because the previous version claimed one it
+    did not have: SQLite is swapped in a single transaction, and no Parquet file
+    is moved into the published directory until that transaction has committed.
+    A crash before the commit leaves BOTH layers entirely on the previous run;
+    a crash during the final renames can leave a mixed Parquet set, which is the
+    one residual window and is milliseconds wide.
+
+    What did not work: wrapping `to_sql(..., if_exists="replace")` calls in
+    `with conn:`. pandas' SQLiteDatabase.run_transaction commits after *every*
+    to_sql, and the DROP/CREATE that "replace" issues runs outside sqlite3's
+    implicit transaction anyway - so the outer block bought nothing. A killed
+    worker left fact_sales from tonight beside dim_product from last night, with
+    fact keys silently resolving against the wrong dimension rows and no error
+    anywhere. Verified against pandas 3.0.2's own source.
+    """
     out = cfg["paths"]["processed"]
     out.mkdir(parents=True, exist_ok=True)
     cfg["paths"]["warehouse"].parent.mkdir(parents=True, exist_ok=True)
 
+    # 1. Parquet to sidecars - written now, published only after SQLite commits.
+    staged: list[tuple[Path, Path]] = []
     for name, df in tables.items():
-        df.to_parquet(out / f"{name}.parquet", index=False, compression="snappy")
+        tmp = out / f"{name}.parquet.tmp"
+        df.to_parquet(tmp, index=False, compression="snappy")
+        staged.append((tmp, out / f"{name}.parquet"))
 
     # timeout: the DAG runs measure_adoption as a branch parallel to the
     # merchandising chain, so two tasks can call load() against this file at
@@ -367,13 +411,36 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
     # sqlite3 default timeout is 5 s - a margin thin enough that a slower disk
     # or a larger extract turns into "database is locked". WAL lets the readers
     # through and the explicit timeout gives the writers room to queue.
-    with closing(sqlite3.connect(cfg["paths"]["warehouse"], timeout=60.0)) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")     # outside any transaction
-        with conn:                                  # commit/rollback as one unit
+    try:
+        with closing(sqlite3.connect(cfg["paths"]["warehouse"], timeout=60.0)) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+
+            # 2. Load into __new tables, under sqlite3's default transaction
+            #    handling. Do NOT switch to isolation_level=None before this:
+            #    that autocommits every INSERT individually and took a full run
+            #    from 12 s to 80 s (measured).
             for name, df in tables.items():
-                df.to_sql(name, conn, if_exists="replace", index=False)
-            for stmt in ("CREATE INDEX IF NOT EXISTS ix_fact_stock ON fact_sales(stock_code)",
-                         "CREATE INDEX IF NOT EXISTS ix_fact_date ON fact_sales(date_key)"):
+                df.to_sql(f"{name}__new", conn, if_exists="replace", index=False)
+
+            # 3. Swap. isolation_level=None only now, because sqlite3 does not
+            #    open a transaction for DDL, so without manual control the
+            #    renames below would autocommit table by table - which is the
+            #    torn state being fixed. SQLite DDL is transactional, so with an
+            #    explicit BEGIN this is genuinely all-or-nothing.
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for name in tables:
+                    conn.execute(f'DROP TABLE IF EXISTS "{name}"')
+                    conn.execute(f'ALTER TABLE "{name}__new" RENAME TO "{name}"')
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+            # 4. Indexes are dropped with the table they belonged to, so they
+            #    are rebuilt after every swap rather than only on first load.
+            for stmt in _INDEXES:
                 try:
                     conn.execute(stmt)
                 except sqlite3.OperationalError as exc:
@@ -383,10 +450,57 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
                     # failed write behind a successful-looking run.
                     if "no such table" not in str(exc):
                         raise
+    except BaseException:
+        for tmp, _ in staged:               # publish nothing on the way out
+            tmp.unlink(missing_ok=True)
+        raise
+
+    # 5. SQLite is committed; publish Parquet.
+    for tmp, final in staged:
+        os.replace(tmp, final)
     log.info("Loaded %s tables to Parquet and SQLite", len(tables))
 
 
 # --------------------------------------------------------------------------- #
+
+def write_run_metrics(cfg: dict, *, n_raw: int, n_quarantined: int, n_clean: int,
+                      n_products: int, recs: pd.DataFrame,
+                      adoption_headline: pd.DataFrame, runtime_seconds: float) -> dict:
+    """Assemble and write reports/run_metrics.json.
+
+    Factored out of run() because run() is not the code path production uses.
+    The Airflow DAG wires the stage functions up directly and never calls run(),
+    so for every scheduled run this file was simply never rewritten - it stayed
+    frozen at whatever a developer's last local run produced while the two
+    markdown reports beside it refreshed nightly. A provenance record that
+    silently describes a different run's inputs is worse than none, which is the
+    exact failure mode the digest below exists to prevent.
+    """
+    metrics = {
+        "rows_source": n_raw,
+        "rows_quarantined": n_quarantined,
+        "quarantine_rate_pct": round(100 * n_quarantined / n_raw, 2) if n_raw else 0.0,
+        "rows_loaded": n_clean,
+        "products": n_products,
+        "recommendations": len(recs),
+        "catalogue_coverage_pct": round(
+            100 * recs["stock_code"].nunique() / n_products, 1) if n_products else 0.0,
+        "adoption": {r.metric: r.value for r in adoption_headline.itertuples()},
+        # Fingerprint the telemetry input. generate_events() in scripts/get_data.py
+        # is seeded and deterministic, but the pipeline reads whatever
+        # usage_events.csv happens to be on disk -- so a file left over from an
+        # older revision produces a self-consistent report that no one can
+        # reproduce, and any doc quoting it silently goes stale. Recording the
+        # digest makes "which input produced this report" answerable from the
+        # report itself.
+        "inputs": _input_fingerprint(cfg),
+        "runtime_seconds": round(runtime_seconds, 1),
+    }
+    (cfg["paths"]["reports"] / "run_metrics.json").write_text(
+        json.dumps(metrics, indent=2, default=str), encoding="utf-8"
+    )
+    return metrics
+
 
 def run(config_path: str | None = None) -> dict:
     from retail_pipeline.adoption import measure_adoption
@@ -406,28 +520,11 @@ def run(config_path: str | None = None) -> dict:
 
     load({**tables, "quarantine": quarantine, "recommendations": recs, **adoption}, cfg)
 
-    metrics = {
-        "rows_source": len(raw),
-        "rows_quarantined": len(quarantine),
-        "quarantine_rate_pct": round(100 * len(quarantine) / len(raw), 2),
-        "rows_loaded": len(clean),
-        "products": len(tables["dim_product"]),
-        "recommendations": len(recs),
-        "catalogue_coverage_pct": round(
-            100 * recs["stock_code"].nunique() / len(tables["dim_product"]), 1),
-        "adoption": {r.metric: r.value for r in adoption["adoption_headline"].itertuples()},
-        # Fingerprint the telemetry input. generate_events() in scripts/get_data.py
-        # is seeded and deterministic, but the pipeline reads whatever
-        # usage_events.csv happens to be on disk -- so a file left over from an
-        # older revision produces a self-consistent report that no one can
-        # reproduce, and any doc quoting it silently goes stale. Recording the
-        # digest makes "which input produced this report" answerable from the
-        # report itself.
-        "inputs": _input_fingerprint(cfg),
-        "runtime_seconds": round(time.perf_counter() - started, 1),
-    }
-    (cfg["paths"]["reports"] / "run_metrics.json").write_text(
-        json.dumps(metrics, indent=2, default=str), encoding="utf-8"
+    metrics = write_run_metrics(
+        cfg, n_raw=len(raw), n_quarantined=len(quarantine), n_clean=len(clean),
+        n_products=len(tables["dim_product"]), recs=recs,
+        adoption_headline=adoption["adoption_headline"],
+        runtime_seconds=time.perf_counter() - started,
     )
     log.info("Done in %.1fs", metrics["runtime_seconds"])
     return metrics

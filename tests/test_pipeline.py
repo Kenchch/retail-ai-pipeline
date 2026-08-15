@@ -92,10 +92,30 @@ def test_quarantine_keeps_the_reasons_and_the_flagged_rows(sample, cfg):
     assert "536384" in set(clean["invoice_no"])
 
 
-def test_the_gate_stops_the_run(sample, cfg):
+def test_the_gate_stops_the_run(sample, cfg, tmp_path):
     cfg["quality"]["max_quarantine_rate"] = 0.01
+    cfg["paths"] = dict(cfg["paths"], reports=tmp_path)
     with pytest.raises(ValueError, match="refusing to load"):
         check_quality(sample, cfg)
+
+
+def test_a_failed_gate_still_writes_the_quality_report(sample, cfg, tmp_path):
+    """The gate's message says "investigate the source extract", and this report
+    is what an investigator opens to do that. Raising before writing it left the
+    previous run's green numbers in place, so the one run that needed the report
+    was the only run that never produced it."""
+    cfg["quality"]["max_quarantine_rate"] = 0.01
+    cfg["paths"] = dict(cfg["paths"], reports=tmp_path)
+    report = tmp_path / "data_quality_report.md"
+    report.write_text("# stale - from a previous, successful run\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="refusing to load"):
+        check_quality(sample, cfg)
+
+    text = report.read_text(encoding="utf-8")
+    assert "GATE FAILED" in text and "NOTHING WAS PUBLISHED" in text
+    assert "stale" not in text                      # it was actually rewritten
+    assert "Would have loaded" in text              # not reported as published
 
 
 # --- star schema ----------------------------------------------------------- #
@@ -272,3 +292,60 @@ def test_the_input_digest_is_the_same_on_windows_and_linux(cfg, tmp_path):
         f"digest depends on os.linesep: LF gave {digests['LF']}, "
         f"CRLF gave {digests['CRLF']}"
     )
+
+
+def test_headline_and_team_reach_share_one_denominator(cfg):
+    """A team using the solution but missing from the roster used to be counted
+    in headline's numerator and excluded from its denominator, while the by-team
+    table repaired its own copy - so the two tables divided by different totals
+    and headline could exceed 100%."""
+    rows = [("2026-04-06 10:00", f"U{i}", "Ghost Team", "view", "S1", None) for i in range(20)]
+    rows += [("2026-04-06 10:00", "K1", "Category Management", "view", "S1", None)]
+    df = pd.DataFrame(rows, columns=["event_ts", "user_id", "team", "event_type",
+                                     "stock_code", "feedback_score"])
+    df["event_ts"] = pd.to_datetime(df["event_ts"])
+    cfg["adoption"]["roster"] = {"Category Management": 1}
+    cfg["adoption"]["licensed_users"] = 1          # the stale configured total
+
+    h = headline_metrics(df, cfg).set_index("metric")
+    t = team_metrics(df, cfg)
+
+    assert h.loc["reach_pct", "value"] <= 100.0
+    assert int(t["licensed_users"].sum()) == 21     # 1 configured + 20 observed
+    assert h.loc["reach_pct", "value"] == round(100 * 21 / 21, 1)
+    assert set(t["team"]) == {"Category Management", "Ghost Team"}
+
+
+def test_load_publishes_neither_layer_when_sqlite_fails(cfg, tmp_path, monkeypatch):
+    """pandas commits after every to_sql, so wrapping the loop in `with conn:`
+    never made the multi-table replace atomic: a mid-load failure left fact_sales
+    from tonight beside dim_product from last night, in both Parquet and SQLite."""
+    import pandas as _pd
+    from retail_pipeline import pipeline as P
+
+    cfg["paths"] = dict(cfg["paths"], processed=tmp_path / "processed",
+                        warehouse=tmp_path / "wh" / "retail.db")
+    old = {"dim_product": _pd.DataFrame({"stock_code": ["OLD"], "description": ["last night"]}),
+           "fact_sales": _pd.DataFrame({"stock_code": ["OLD"], "date_key": ["2026-01-01"]})}
+    P.load(old, cfg)
+
+    real = _pd.DataFrame.to_sql
+    def boom(self, name, con, **kw):
+        if name.startswith("dim_product"):
+            raise RuntimeError("worker killed mid-load")
+        return real(self, name, con, **kw)
+    monkeypatch.setattr(_pd.DataFrame, "to_sql", boom)
+
+    new = {"dim_product": _pd.DataFrame({"stock_code": ["NEW"], "description": ["tonight"]}),
+           "fact_sales": _pd.DataFrame({"stock_code": ["NEW"], "date_key": ["2026-02-02"]})}
+    with pytest.raises(RuntimeError, match="worker killed"):
+        P.load(new, cfg)
+
+    import sqlite3
+    with sqlite3.connect(cfg["paths"]["warehouse"]) as conn:
+        assert conn.execute("SELECT stock_code FROM fact_sales").fetchall() == [("OLD",)]
+        assert conn.execute("SELECT stock_code FROM dim_product").fetchall() == [("OLD",)]
+    for name in ("fact_sales", "dim_product"):
+        got = _pd.read_parquet(cfg["paths"]["processed"] / f"{name}.parquet")
+        assert list(got["stock_code"]) == ["OLD"], f"{name} parquet was published anyway"
+    assert not list(cfg["paths"]["processed"].glob("*.tmp"))   # no sidecars left behind
