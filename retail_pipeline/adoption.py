@@ -33,6 +33,36 @@ def load_events(cfg: dict) -> pd.DataFrame:
     return pd.read_csv(path, parse_dates=["event_ts"])
 
 
+def effective_roster(events: pd.DataFrame, cfg: dict) -> dict[str, int]:
+    """The configured roster, repaired with any team that is using the solution
+    but was never licensed for it.
+
+    This repair used to live inside team_metrics(), on a local copy that was
+    never handed back. So the by-team table divided by a repaired denominator
+    while headline_metrics() divided by the configured one - same numerator,
+    two different denominators - and headline was computed first, before the
+    "not on the roster" warning was even emitted. Measured on the real telemetry
+    with one genuinely unlisted team appended: headline reported reach 82.30%
+    against a true 75.0%; with a 20-person unlisted team all active it reported
+    `reach_pct 106.50 ... on track`.
+
+    One function, called once, is what keeps the two tables answering the same
+    question. The repaired size is the count of distinct users observed, which
+    is a lower bound on that team's real headcount, so reach for an unlicensed
+    team stays optimistic - unavoidable without a real roster, and still far
+    better than the >100% that dropping them produced.
+    """
+    roster = dict(cfg["adoption"]["roster"])
+    if not len(events):
+        return roster
+    unlisted = sorted(set(events["team"].dropna()) - set(roster))
+    if unlisted:   # using it but never licensed = the rollout list is stale
+        log.warning("Active but not on the roster: %s", ", ".join(unlisted))
+        for team in unlisted:
+            roster[team] = int(events[events["team"] == team]["user_id"].nunique())
+    return roster
+
+
 def weekly_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """Weekly trend over a CONTINUOUS calendar.
 
@@ -71,13 +101,8 @@ def team_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """One row per team on the ROSTER, including teams with no events at all -
     a team that never opened the report contributes no rows to the log, so any
     team list derived from the log omits exactly the team worth surfacing."""
-    roster = dict(cfg["adoption"]["roster"])
+    roster = effective_roster(events, cfg)
     if len(events):
-        unlisted = sorted(set(events["team"].dropna()) - set(roster))
-        if unlisted:   # using it but never licensed = the rollout list is stale
-            log.warning("Active but not on the roster: %s", ", ".join(unlisted))
-            for team in unlisted:
-                roster[team] = int(events[events["team"] == team]["user_id"].nunique())
         window = events["event_ts"].max() - pd.Timedelta(
             weeks=cfg["adoption"]["active_window_weeks"])
         recent = events[events["event_ts"] >= window]
@@ -107,7 +132,10 @@ def team_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
 def headline_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     a = cfg["adoption"]
-    licensed = a["licensed_users"]
+    # The SAME denominator team_metrics uses. Reading a["licensed_users"] here
+    # meant the numerator counted every user in the log while the denominator
+    # counted only the configured roster.
+    licensed = sum(effective_roster(events, cfg).values())
     if len(events):
         end = events["event_ts"].max()
         recent = events[events["event_ts"] >= end - pd.Timedelta(weeks=a["active_window_weeks"])]
@@ -147,9 +175,11 @@ def write_report(headline: pd.DataFrame, weekly: pd.DataFrame,
     def cell(v):
         return "&ndash;" if v is None or pd.isna(v) else v
 
+    # Derived from the by-team table, so the stated denominator is the one the
+    # metrics were actually divided by rather than the configured roster.
     lines = ["# Adoption report", "",
-             f"{cfg['adoption']['licensed_users']} licensed users across "
-             f"{len(cfg['adoption']['roster'])} teams.", "",
+             f"{int(teams['licensed_users'].sum())} licensed users across "
+             f"{len(teams)} teams.", "",
              "| Metric | Value | Target | Status |", "|---|---|---|---|"]
     lines += [f"| {r.metric} | {cell(r.value)} | {cell(r.target)} | {r.status} |"
               for r in headline.itertuples()]

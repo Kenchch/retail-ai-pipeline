@@ -1,0 +1,12 @@
+# The semantic-model CSVs are build output, not source. fact_sales.csv alone is
+# 21 MB and changes wholesale on every run, which is the worst possible shape
+# for a git object. Reproduce them in one command:
+#
+#   python -m retail_pipeline.pipeline && python -m bi.build_star_schema
+#
+model/
+
+# Power BI Desktop
+*.pbix
+*.pbip
+.pbi/
