@@ -6,22 +6,6 @@ table — plus the business-side work that decides whether any of it gets used: 
 requirements brief, a user guide, an AI-literacy workshop and adoption
 measurement wired into the pipeline itself.
 
-## Power BI semantic layer
-
-The warehouse this pipeline publishes is consumed by a Power BI semantic model
-in [`bi/`](bi/) — star schema with surrogate keys and an unknown member, a
-calendar built for time intelligence, a second fact table for data quality
-joined on conformed dimensions, a many-to-many bridge for the quality rules, a
-35-measure DAX library and dynamic row-level security over an entitlement table.
-
-![Power BI model view](bi/screenshots/model-view.png)
-
-Reconciles to £10,247,353.28 over 19,773 orders, and 522,566 loaded + 19,343
-rejected = 541,909 — the source row count.
-
-Design and the decisions behind it: [`bi/MODEL.md`](bi/MODEL.md).
-Build it yourself in ~45 minutes: [`bi/BUILD_POWERBI.md`](bi/BUILD_POWERBI.md).
-
 ```bash
 pip install -r requirements.txt
 python scripts/get_data.py           # ~45 MB of transactions + usage telemetry
@@ -52,6 +36,22 @@ CHILDS GARDEN SPADE BLUE      ->  CHILDS GARDEN SPADE PINK       lift 234.1   40
 
 Outputs: [`reports/data_quality_report.md`](reports/data_quality_report.md) ·
 [`reports/adoption_report.md`](reports/adoption_report.md) · `reports/run_metrics.json`
+
+## Power BI semantic layer
+
+The warehouse this pipeline publishes is consumed by a Power BI semantic model
+in [`bi/`](bi/) — star schema with surrogate keys and an unknown member, a
+calendar built for time intelligence, a second fact table for data quality
+joined on conformed dimensions, a many-to-many bridge for the quality rules, a
+35-measure DAX library and dynamic row-level security over an entitlement table.
+
+![Power BI model view](bi/screenshots/model-view.png)
+
+Reconciles to £10,247,353.28 over 19,773 orders, and 522,566 loaded + 19,343
+rejected = 541,909 — the source row count.
+
+Design and the decisions behind it: [`bi/MODEL.md`](bi/MODEL.md).
+Build it yourself in ~45 minutes: [`bi/BUILD_POWERBI.md`](bi/BUILD_POWERBI.md).
 
 ## How it works
 
