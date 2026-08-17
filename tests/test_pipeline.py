@@ -160,6 +160,59 @@ def _basket_tables():
     return {"fact_sales": fact, "dim_product": dim}
 
 
+def test_single_item_baskets_count_in_the_denominator(cfg):
+    """Baskets that cannot form a pair are still part of the population.
+
+    Three baskets - {A}, {A,B}, {A,B,C} - worked by hand:
+
+        all baskets      = 3      A in 3, B in 2, C in 1
+        A and B together = 2
+        support(A,B)     = 2/3
+        confidence(A→B)  = 2/3    NOT 2/2
+        lift(A,B)        = (2/3) / (2/3) = 1.0
+
+    Counting the population over pair-forming baskets only would give
+    confidence 2/2 = 1.0 and lift 1.5: a rule that holds two times in three
+    reported as one that never fails. A basket where A was bought alone is
+    evidence against A→B, which is exactly why it has to stay in.
+    """
+    cfg["recommend"].update(min_support_count=1, min_confidence=0.0, min_lift=0.0)
+    fact = pd.DataFrame(
+        [("I1", "A"), ("I2", "A"), ("I2", "B"), ("I3", "A"), ("I3", "B"), ("I3", "C")],
+        columns=["invoice_no", "stock_code"],
+    )
+    dim = pd.DataFrame({"stock_code": list("ABC"), "description": ["AA", "BB", "CC"]})
+    recs = recommend({"fact_sales": fact, "dim_product": dim}, cfg)
+
+    ab = recs[(recs.stock_code == "A") & (recs.recommended_stock_code == "B")]
+    assert round(ab["support"].iat[0], 4) == round(2 / 3, 4)
+    assert round(ab["confidence"].iat[0], 4) == round(2 / 3, 4)
+    assert round(ab["lift"].iat[0], 4) == 1.0
+
+
+def test_oversized_baskets_count_in_the_denominator(cfg):
+    """The size cap is a pair-generation guard, not a population definition.
+
+    A product sold in wholesale-scale baskets had those baskets dropped from
+    its own denominator, which is what inflated confidence 4.2x on the worst
+    real rule. Here A appears in 3 baskets, one of them over the cap, and
+    pairs with B in one of the two countable ones.
+    """
+    cfg["recommend"].update(min_support_count=1, min_confidence=0.0, min_lift=0.0,
+                            max_basket_size=3)
+    rows = [("I1", "A"), ("I2", "A"), ("I2", "B")]
+    rows += [("I3", p) for p in ("A", "B", "C", "D", "E")]      # 5 items > cap 3
+    fact = pd.DataFrame(rows, columns=["invoice_no", "stock_code"])
+    dim = pd.DataFrame({"stock_code": list("ABCDE"),
+                        "description": [f"D{x}" for x in "ABCDE"]})
+    recs = recommend({"fact_sales": fact, "dim_product": dim}, cfg)
+
+    ab = recs[(recs.stock_code == "A") & (recs.recommended_stock_code == "B")]
+    # A is in all 3 baskets; the oversized one is excluded from pairing only.
+    assert round(ab["confidence"].iat[0], 4) == round(1 / 3, 4)
+    assert round(ab["support"].iat[0], 4) == round(1 / 3, 4)
+
+
 def test_lift_is_computed_correctly(cfg):
     cfg["recommend"]["min_support_count"] = 5
     recs = recommend(_basket_tables(), cfg)

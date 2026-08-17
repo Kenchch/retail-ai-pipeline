@@ -8,6 +8,21 @@ Two signals, one structured and one unstructured:
     confidence(A→B) = baskets with both / baskets with A
     lift(A,B)       = confidence(A→B) / (baskets with B / all baskets)
 
+"All baskets" means all of them - including single-item baskets, which are
+evidence against a rule rather than absent from it. Only the numerator's pair
+counting skips baskets outside 2..max_basket_size: a one-item basket cannot
+form a pair, and a 1,107-item wholesale order would contribute 612k pairs of
+things that merely shared a pallet. So the three figures are conservative,
+never inflated - a co-purchase inside an oversized basket goes uncounted.
+
+Worked example, three baskets: {A}, {A, B}, {A, B, C}
+
+    all baskets     = 3        A appears in 3, B in 2, C in 1
+    A and B together = 2
+    support(A,B)     = 2/3 = 0.67
+    confidence(A→B)  = 2/3 = 0.67      <- not 2/2, the {A} basket counts
+    lift(A,B)        = 0.67 / (2/3) = 1.0
+
 Rules are ranked by **lift**, not by raw co-occurrence, because raw counts just
 re-rank the best sellers - a popular product co-occurs with everything, which
 makes for recommendations that are confidently useless. `lift > 1` means B is
@@ -56,15 +71,34 @@ def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     # object dtype, which it cannot always do from a group result. len() works
     # on the lists regardless.
     sizes = baskets.map(len)
-    baskets = baskets[(sizes >= 2) & (sizes <= c["max_basket_size"])]
 
+    # The population is every basket, and the size filter applies ONLY to pair
+    # generation. These are two different questions and conflating them
+    # overstates the result.
+    #
+    # "Of the baskets containing A, how many also contain B" is a question about
+    # all baskets containing A - including the ones where A was bought alone,
+    # which are evidence *against* the rule, and including wholesale-scale ones.
+    # Counting `items` and `n` over the filtered set instead shrinks every
+    # denominator: on this dataset it inflated confidence on 100% of published
+    # rules, by 1.47x at the median and 4.2x at the worst (84032A -> 84032B read
+    # 0.59 where the true figure is 0.14, because 239 of that product's 313
+    # baskets were larger than the cap and silently left the denominator).
+    #
+    # Pair generation still skips them, for two different reasons: a one-item
+    # basket cannot produce a pair at all, and a 1,107-item wholesale order
+    # would contribute 612k pairs of things that merely shared a pallet. That
+    # makes support/confidence/lift *conservative* - co-occurrences inside
+    # oversized baskets go uncounted - which is the safe direction for a number
+    # someone is going to act on.
+    n = len(baskets)
     items: Counter = Counter()
-    pairs: Counter = Counter()
     for products in baskets:
         items.update(products)
-        pairs.update(combinations(products, 2))   # sorted -> stable key
 
-    n = len(baskets)
+    pairs: Counter = Counter()
+    for products in baskets[(sizes >= 2) & (sizes <= c["max_basket_size"])]:
+        pairs.update(combinations(products, 2))   # sorted -> stable key
     rows = []
     for (a, b), count in pairs.items():
         if count < c["min_support_count"]:
