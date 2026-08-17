@@ -92,35 +92,67 @@ def task_quality(**context):
     quarantine.to_parquet(_staging(cfg, "quarantine", run_id), index=False)
 
 
-def task_transform_load(**context):
+def task_transform(**context):
+    """Builds the star schema into staging. Publishing is `publish`'s job."""
     cfg = load_config()
     run_id = context["run_id"]
-    tables = transform(_read_staged(cfg, "clean", run_id, "data_quality_gate"))
-    load({**tables, "quarantine": _read_staged(cfg, "quarantine", run_id,
-                                               "data_quality_gate")}, cfg)
+    for name, df in transform(_read_staged(cfg, "clean", run_id, "data_quality_gate")).items():
+        df.to_parquet(_staging(cfg, name, run_id), index=False)
 
 
-def task_recommend(**_):
+def task_recommend(**context):
     cfg = load_config()
-    tables = {n: pd.read_parquet(cfg["paths"]["processed"] / f"{n}.parquet")
+    run_id = context["run_id"]
+    # Reads this run's staged star schema, not the published one. Reading the
+    # published copy made tonight's recommendations depend on tonight's facts
+    # having already been published, which is what forced the split publish
+    # this DAG used to do.
+    tables = {n: _read_staged(cfg, n, run_id, "transform")
               for n in ("fact_sales", "dim_product")}
-    load({"recommendations": recommend(tables, cfg)}, cfg)
+    recommend(tables, cfg).to_parquet(_staging(cfg, "recommendations", run_id), index=False)
 
 
-def task_adoption(**_):
-    """Adoption runs as its own root branch, parallel to the merchandising
-    chain, because it reads the usage telemetry and nothing the extract
-    produces. Being a separate branch is what makes the two independent in both
-    directions: a missing telemetry extract cannot hold back the merchandising
-    data the morning planogram review depends on, and - the direction that
-    actually bites - a failed quality gate cannot let adoption publish over the
-    warehouse on a night when the rest of the run was deliberately stopped.
+def task_adoption(**context):
+    """Adoption computes on its own root branch, because it reads the usage
+    telemetry and nothing the extract produces - so a slow or failing extract
+    should not stop it being calculated. It still publishes with everything
+    else, in `publish`.
 
-    It must NOT be a downstream task with `trigger_rule="all_done"`. Downstream
-    of the gate, `all_done` means "run even though the gate failed", and load()
-    writes with if_exists="replace"."""
+    That is a deliberate trade. Independent branches and an atomic publish
+    cannot both be had without versioning the warehouse: either a telemetry
+    failure can hold back the sales refresh, or the two can disagree about
+    which run they came from. This picks the first, because the README promises
+    the second cannot happen."""
     cfg = load_config()
-    load(measure_adoption(cfg), cfg)
+    run_id = context["run_id"]
+    for name, df in measure_adoption(cfg).items():
+        df.to_parquet(_staging(cfg, name, run_id), index=False)
+
+
+def task_publish(**context):
+    """The only task that writes to the warehouse.
+
+    Splitting the publish across transform, recommend and adoption meant a
+    failure between them left the warehouse holding tonight's fact_sales beside
+    last night's recommendations, with nothing recording that it had happened -
+    and the recommendations referencing stock codes that tonight's dim_product
+    no longer contained. Both the README ("a broken extract leaves last night's
+    data intact") and pipeline.run(), which has always published in a single
+    call, described behaviour this DAG did not have.
+
+    Every table is now written in one load(), which is itself one SQLite
+    transaction, so the warehouse only ever holds one run's output."""
+    cfg = load_config()
+    run_id = context["run_id"]
+    names = ("fact_sales", "dim_product", "dim_customer", "dim_date", "quarantine",
+             "recommendations", "adoption_headline", "adoption_weekly", "adoption_by_team")
+    produced = {"quarantine": "data_quality_gate", "recommendations": "build_recommendations"}
+    tables = {
+        n: _read_staged(cfg, n, run_id,
+                        produced.get(n, "measure_adoption" if n.startswith("adoption") else "transform"))
+        for n in names
+    }
+    load(tables, cfg)
 
 
 def task_run_metrics(**_):
@@ -199,22 +231,25 @@ with DAG(
 ) as dag:
     t1 = PythonOperator(task_id="extract", python_callable=task_extract)
     t2 = PythonOperator(task_id="data_quality_gate", python_callable=task_quality)
-    t3 = PythonOperator(task_id="transform_and_load", python_callable=task_transform_load)
+    t3 = PythonOperator(task_id="transform", python_callable=task_transform)
     t4 = PythonOperator(task_id="build_recommendations", python_callable=task_recommend)
     t5 = PythonOperator(task_id="measure_adoption", python_callable=task_adoption)
-    t6 = PythonOperator(task_id="write_run_metrics", python_callable=task_run_metrics,
+    t6 = PythonOperator(task_id="publish", python_callable=task_publish)
+    t7 = PythonOperator(task_id="write_run_metrics", python_callable=task_run_metrics,
                         trigger_rule="all_success")
-    t7 = PythonOperator(task_id="clear_staging", python_callable=task_clear_staging,
+    t8 = PythonOperator(task_id="clear_staging", python_callable=task_clear_staging,
                         trigger_rule="all_success")
-    t8 = PythonOperator(task_id="prune_staging", python_callable=task_prune_staging,
+    t9 = PythonOperator(task_id="prune_staging", python_callable=task_prune_staging,
                         trigger_rule="all_done")
 
-    # Two independent branches. The merchandising chain stops at the gate;
-    # adoption reads telemetry and is unaffected either way. They join at
-    # write_run_metrics, which needs both sides published and therefore runs on
-    # all_success. clear_staging is all_success too - deleting this run's
-    # hand-off files after a failure is what made the gate unrecoverable.
-    # prune_staging keeps all_done, but only removes directories older than
-    # STAGING_RETENTION_DAYS, so nothing a re-run might need is taken away.
+    # Everything upstream of `publish` computes into per-run staging and touches
+    # nothing a reader can see. `publish` is the only writer, so the warehouse
+    # holds one run's output or the previous run's, never a mixture.
+    #
+    # Adoption stays a separate branch because it computes from telemetry and
+    # does not need the extract; it joins at publish rather than publishing
+    # itself. clear_staging is all_success - deleting this run's hand-off files
+    # after a failure is what made the gate unrecoverable. prune_staging keeps
+    # all_done but only removes directories older than STAGING_RETENTION_DAYS.
     t1 >> t2 >> t3 >> t4
-    [t4, t5] >> t6 >> t7 >> t8
+    [t4, t5] >> t6 >> t7 >> t8 >> t9

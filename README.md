@@ -59,8 +59,11 @@ Build it yourself in ~45 minutes: [`bi/BUILD_POWERBI.md`](bi/BUILD_POWERBI.md).
 extract → data quality → star schema → load → recommend → adoption
 ```
 
-Three modules, scheduled as six Airflow tasks
+Three modules, scheduled as nine Airflow tasks
 ([`dags/`](dags/retail_pipeline_dag.py)) so a failure names the stage that broke.
+Every stage computes into per-run staging; a single `publish` task is the only
+thing that writes to the warehouse, so it holds one run's output or the previous
+run's and never a mixture of the two.
 
 **Data quality (9 rules, 4 dimensions).** Cancellations, non-positive quantities
 and prices, duplicates, price outliers and non-product stock codes are
