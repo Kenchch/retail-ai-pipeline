@@ -78,6 +78,24 @@ def resolve_as_of(events: pd.DataFrame, cfg: dict) -> pd.Timestamp | None:
     return events["event_ts"].max() if len(events) else None
 
 
+def eligible_events(events: pd.DataFrame, as_of: pd.Timestamp | None) -> pd.DataFrame:
+    """Everything at or before the analysis date, and nothing after it.
+
+    `as_of` used to bound only the four-week reach window, so activation, action
+    rate, CSAT, the weekly trend and every team row still read the whole log.
+    With as_of pinned to 7 April, injecting two events dated 20 May moved action
+    rate 50 -> 100, CSAT from no-data to 1.0, activation 50 -> 100 and the
+    weekly table from 1 row to 7. A report headed "four weeks ending 7 April"
+    was describing May.
+
+    Applied once, at the top of every metric function, so a caller cannot get a
+    half-filtered answer.
+    """
+    if as_of is None or events.empty:
+        return events
+    return events.loc[events["event_ts"] <= as_of]
+
+
 def effective_roster(events: pd.DataFrame, cfg: dict) -> dict[str, int]:
     """The configured roster, repaired with any team that is using the solution
     but was never licensed for it.
@@ -117,6 +135,7 @@ def weekly_metrics(
     week drops that week - the trend closes over the gap and every later week
     shifts one position left. Zero activity is a fact worth plotting.
     """
+    events = eligible_events(events, as_of)
     # effective_roster, not cfg["licensed_users"]. headline and team were moved
     # onto the repaired roster and this was left behind, so the moment a team
     # appeared in the log without being on the roster, weekly reach was computed
@@ -167,9 +186,10 @@ def team_metrics(
     """One row per team on the ROSTER, including teams with no events at all -
     a team that never opened the report contributes no rows to the log, so any
     team list derived from the log omits exactly the team worth surfacing."""
+    as_of = as_of if as_of is not None else resolve_as_of(events, cfg)
+    events = eligible_events(events, as_of)
     roster = effective_roster(events, cfg)
     if len(events):
-        as_of = as_of if as_of is not None else resolve_as_of(events, cfg)
         window = as_of - pd.Timedelta(weeks=cfg["adoption"]["active_window_weeks"])
         # Bounded at both ends, like headline. With as_of pinned in config an
         # event after it is a late arrival for a period already reported on, and
@@ -219,12 +239,14 @@ def headline_metrics(
     events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = None
 ) -> pd.DataFrame:
     a = cfg["adoption"]
+    as_of = as_of if as_of is not None else resolve_as_of(events, cfg)
+    events = eligible_events(events, as_of)
     # The SAME denominator team_metrics uses. Reading a["licensed_users"] here
     # meant the numerator counted every user in the log while the denominator
     # counted only the configured roster.
     licensed = sum(effective_roster(events, cfg).values())
     if len(events):
-        end = as_of if as_of is not None else resolve_as_of(events, cfg)
+        end = as_of
         recent = events[
             (events["event_ts"] >= end - pd.Timedelta(weeks=a["active_window_weeks"]))
             & (events["event_ts"] <= end)

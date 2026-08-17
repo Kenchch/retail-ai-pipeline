@@ -455,6 +455,54 @@ def test_analysis_as_of_is_honoured_and_shared(events, cfg):
     assert adoption_mod.resolve_as_of(events, cfg) == events["event_ts"].max()
 
 
+def test_events_after_as_of_change_nothing(events, cfg):
+    """as_of is a snapshot, not just a window edge.
+
+    It used to bound only the four-week reach window, so activation, action
+    rate, CSAT, the weekly trend and every team row still read the whole log.
+    With as_of at 7 April, two events dated 20 May moved action rate 50 -> 100,
+    CSAT from no-data to 1.0, activation 50 -> 100, and the weekly table from
+    one row to seven - under a heading that said "four weeks ending 7 April".
+    """
+    cfg["adoption"]["roster"] = {"Category Management": 1, "Merchandising": 1}
+    cfg["adoption"]["licensed_users"] = 2
+    as_of = pd.Timestamp("2026-04-07 23:59:59.999999999")
+
+    later = pd.DataFrame(
+        [
+            ("2026-05-20 10:00", "U2", "Merchandising", "apply", "S1", None),
+            ("2026-05-20 10:05", "U2", "Merchandising", "feedback", None, 1.0),
+        ],
+        columns=[
+            "event_ts",
+            "user_id",
+            "team",
+            "event_type",
+            "stock_code",
+            "feedback_score",
+        ],
+    )
+    later["event_ts"] = pd.to_datetime(later["event_ts"])
+    contaminated = pd.concat(
+        [events.drop(columns=["week_start"]), later], ignore_index=True
+    )
+
+    def snapshot(ev):
+        h = headline_metrics(ev, cfg, as_of).set_index("metric")["value"]
+        t = team_metrics(ev, cfg, as_of)
+        return (
+            h["reach_pct"],
+            h["activation_pct"],
+            h["action_rate_pct"],
+            pd.isna(h["csat"]),
+            len(weekly_metrics(ev, cfg, as_of)),
+            int(t["applies"].sum()),
+            int(t["active_users"].sum()),
+        )
+
+    assert snapshot(contaminated) == snapshot(events.drop(columns=["week_start"]))
+
+
 def test_csat_outside_the_scale_and_blank_teams_are_rejected(cfg, tmp_path):
     """CSAT is a mean, so one out-of-range score moves the headline without ever
     looking wrong; an event with no team counts in the totals and in no team's
