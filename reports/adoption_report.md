@@ -1,6 +1,8 @@
 # Adoption report
 
-62 licensed users across 5 teams.
+62 licensed users across 5 teams &middot; four weeks ending 28 Jun 2026.
+
+_Simulated telemetry from `scripts/get_data.py` - this has not been deployed to real users. Schema and metrics are the production ones._
 
 | Metric | Value | Target | Status |
 |---|---|---|---|

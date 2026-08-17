@@ -45,6 +45,13 @@ adoption:
     Marketing: 9
     Store Ops: 10
   active_window_weeks: 4
+  # The day every window is measured back from. Left unset it falls back to the
+  # newest event, which is right for this fixed simulated extract but wrong on a
+  # live feed: the window would slide with the data, so a telemetry feed that
+  # died a month ago would still report full reach. Pinned here so the report
+  # can state the date it speaks about.
+  analysis_as_of: 2026-06-28
+  csat_scale: [1, 5]
   target_reach_pct: 70
   target_action_rate_pct: 25
   target_csat: 4.0

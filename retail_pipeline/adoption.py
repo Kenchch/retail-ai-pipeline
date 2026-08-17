@@ -30,7 +30,48 @@ def load_events(cfg: dict) -> pd.DataFrame:
     path = cfg["paths"]["usage_events"]
     if not path.exists():
         raise FileNotFoundError(f"{path} not found - run `python scripts/get_data.py`.")
-    return pd.read_csv(path, parse_dates=["event_ts"])
+    events = pd.read_csv(path, parse_dates=["event_ts"])
+
+    # Two checks the metrics used to take on trust. Both are cheap and both
+    # would otherwise surface as a plausible-looking number.
+    scale = cfg["adoption"].get("csat_scale", [1, 5])
+    fb = events.loc[events["event_type"] == "feedback", "feedback_score"].dropna()
+    bad = fb[(fb < scale[0]) | (fb > scale[1])]
+    if len(bad):
+        raise ValueError(
+            f"{len(bad)} feedback score(s) outside {scale[0]}-{scale[1]}: "
+            f"{sorted(bad.unique())[:5]}. CSAT is a mean, so one out-of-range "
+            f"value moves the headline without ever looking wrong."
+        )
+    blank = events["team"].isna() | (events["team"].astype(str).str.strip() == "")
+    if blank.any():
+        raise ValueError(
+            f"{int(blank.sum())} event(s) have no team. Every metric is also cut "
+            f"by team, so these would count in the totals and in no team's row - "
+            f"the parts would silently stop summing to the whole."
+        )
+    return events
+
+
+def resolve_as_of(events: pd.DataFrame, cfg: dict) -> pd.Timestamp | None:
+    """The date every window is measured back from.
+
+    `adoption.analysis_as_of` in config.yaml when set, otherwise the last event
+    in the log. The default is the honest one for a fixed simulated extract, but
+    it is a trap on a live feed: "active in the last four weeks" measured back
+    from the newest event slides backwards with the data, so a telemetry feed
+    that died a month ago still reports full reach. Making it explicit is what
+    lets the report state the date it is speaking about, rather than implying
+    today.
+    """
+    configured = cfg["adoption"].get("analysis_as_of")
+    if configured:
+        ts = pd.Timestamp(configured)
+        # A date carries no time, so pd.Timestamp gives midnight - and "as of
+        # 28 June" would then exclude everything that happened on 28 June.
+        # Anyone writing a date in config means the end of that day.
+        return ts + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1) if ts == ts.normalize() else ts
+    return events["event_ts"].max() if len(events) else None
 
 
 def effective_roster(events: pd.DataFrame, cfg: dict) -> dict[str, int]:
@@ -63,14 +104,18 @@ def effective_roster(events: pd.DataFrame, cfg: dict) -> dict[str, int]:
     return roster
 
 
-def weekly_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+def weekly_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
     """Weekly trend over a CONTINUOUS calendar.
 
     A week nobody used the solution produces no events, so grouping the log by
     week drops that week - the trend closes over the gap and every later week
     shifts one position left. Zero activity is a fact worth plotting.
     """
-    licensed = cfg["adoption"]["licensed_users"]
+    # effective_roster, not cfg["licensed_users"]. headline and team were moved
+    # onto the repaired roster and this was left behind, so the moment a team
+    # appeared in the log without being on the roster, weekly reach was computed
+    # against a smaller denominator than the headline reach beside it.
+    licensed = sum(effective_roster(events, cfg).values())
     if events.empty:
         return pd.DataFrame(columns=["week_no", "week_start", "active_users",
                                      "reach_pct", "views", "applies", "action_rate_pct"])
@@ -97,15 +142,18 @@ def weekly_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return weekly
 
 
-def team_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+def team_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
     """One row per team on the ROSTER, including teams with no events at all -
     a team that never opened the report contributes no rows to the log, so any
     team list derived from the log omits exactly the team worth surfacing."""
     roster = effective_roster(events, cfg)
     if len(events):
-        window = events["event_ts"].max() - pd.Timedelta(
-            weeks=cfg["adoption"]["active_window_weeks"])
-        recent = events[events["event_ts"] >= window]
+        as_of = as_of if as_of is not None else resolve_as_of(events, cfg)
+        window = as_of - pd.Timedelta(weeks=cfg["adoption"]["active_window_weeks"])
+        # Bounded at both ends, like headline. With as_of pinned in config an
+        # event after it is a late arrival for a period already reported on, and
+        # counting it here but not there would split the two tables apart again.
+        recent = events[(events["event_ts"] >= window) & (events["event_ts"] <= as_of)]
     else:
         recent = events
 
@@ -130,15 +178,16 @@ def team_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("reach_pct", ascending=False).reset_index(drop=True)
 
 
-def headline_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+def headline_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
     a = cfg["adoption"]
     # The SAME denominator team_metrics uses. Reading a["licensed_users"] here
     # meant the numerator counted every user in the log while the denominator
     # counted only the configured roster.
     licensed = sum(effective_roster(events, cfg).values())
     if len(events):
-        end = events["event_ts"].max()
-        recent = events[events["event_ts"] >= end - pd.Timedelta(weeks=a["active_window_weeks"])]
+        end = as_of if as_of is not None else resolve_as_of(events, cfg)
+        recent = events[(events["event_ts"] >= end - pd.Timedelta(weeks=a["active_window_weeks"]))
+                        & (events["event_ts"] <= end)]
         views = int((events["event_type"] == "view").sum())
         applies = int((events["event_type"] == "apply").sum())
         fb = events[events["event_type"] == "feedback"]["feedback_score"].dropna()
@@ -171,15 +220,22 @@ def headline_metrics(events: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
 
 def write_report(headline: pd.DataFrame, weekly: pd.DataFrame,
-                 teams: pd.DataFrame, cfg: dict) -> None:
+                 teams: pd.DataFrame, cfg: dict,
+                 as_of: pd.Timestamp | None = None) -> None:
     def cell(v):
         return "&ndash;" if v is None or pd.isna(v) else v
 
     # Derived from the by-team table, so the stated denominator is the one the
     # metrics were actually divided by rather than the configured roster.
+    # The report says which day it is speaking about. Without it "active in the
+    # last 4 weeks" silently means "the 4 weeks before whatever the newest event
+    # happens to be", which is not a date a reader can check against anything.
+    stamp = "" if as_of is None else f" &middot; four weeks ending {as_of:%d %b %Y}"
+    source = ("Simulated telemetry from `scripts/get_data.py` - this has not been "
+              "deployed to real users. Schema and metrics are the production ones.")
     lines = ["# Adoption report", "",
              f"{int(teams['licensed_users'].sum())} licensed users across "
-             f"{len(teams)} teams.", "",
+             f"{len(teams)} teams{stamp}.", "", f"_{source}_", "",
              "| Metric | Value | Target | Status |", "|---|---|---|---|"]
     lines += [f"| {r.metric} | {cell(r.value)} | {cell(r.target)} | {r.status} |"
               for r in headline.itertuples()]
@@ -202,8 +258,11 @@ def write_report(headline: pd.DataFrame, weekly: pd.DataFrame,
 
 def measure_adoption(cfg: dict) -> dict[str, pd.DataFrame]:
     events = load_events(cfg)
-    headline = headline_metrics(events, cfg)
-    weekly = weekly_metrics(events, cfg)
-    teams = team_metrics(events, cfg)
-    write_report(headline, weekly, teams, cfg)
+    # Resolved once and shared, so the three tables cannot disagree about which
+    # day "the last four weeks" ends on.
+    as_of = resolve_as_of(events, cfg)
+    headline = headline_metrics(events, cfg, as_of)
+    weekly = weekly_metrics(events, cfg, as_of)
+    teams = team_metrics(events, cfg, as_of)
+    write_report(headline, weekly, teams, cfg, as_of)
     return {"adoption_headline": headline, "adoption_weekly": weekly, "adoption_by_team": teams}
