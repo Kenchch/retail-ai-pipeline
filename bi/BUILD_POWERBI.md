@@ -1,8 +1,10 @@
 # Building the .pbix
 
-About 45 minutes. **Power BI Desktop is the only requirement** — no Python, no
-repo, no raw data. The nine CSVs in [`model/`](model/) are the build output and
-they are already here.
+About 45 minutes, plus a few minutes to generate the model CSVs.
+
+`model/*.csv` is build output and is **not** in the repo — `.gitignore` keeps
+22 MB of regenerated-every-run files out of git. Two commands produce them, and
+they are the first step below. Everything after that is Power BI Desktop only.
 
 Work through it in order; relationships before measures, measures before
 visuals. Every step ends with something you can check, and the numbers to check
@@ -10,29 +12,31 @@ against are in [§11](#11-validation).
 
 ---
 
-## 0. Put the folder where it belongs
+## 0. Generate the model CSVs
 
-**`bi/` is not in the GitHub repo.** It never was — `.gitignore` keeps the 22 MB
-of model CSVs out, and the folder itself was never committed. Cloning
-`Kenchch/retail-ai-pipeline` on this machine gives you the pipeline and nothing
-of the Power BI work. This zip is the only carrier.
-
-1. Make sure the repo on this machine is current:
+The repo carries the code that builds them, not the CSVs themselves. From a
+fresh clone:
 
 ```powershell
-cd D:\projects\retail-ai-pipeline
-git pull
+git clone https://github.com/Kenchch/retail-ai-pipeline.git
+cd retail-ai-pipeline
+pip install -r requirements.txt
+
+python scripts/get_data.py           # ~45 MB source extract, digest-verified
+python -m retail_pipeline.pipeline   # ~12 s - builds the warehouse
+python -m bi.build_star_schema       # writes bi/model/*.csv
 ```
 
-2. Unzip this package so that `bi\` lands inside the repo:
+The last command prints a reconciliation you should see before continuing:
 
 ```
-D:\projects\retail-ai-pipeline\bi\model\fact_sales.csv      22 MB, the big one
-D:\projects\retail-ai-pipeline\bi\measures.dax               30 measures + 3 RLS expressions
-D:\projects\retail-ai-pipeline\bi\BUILD_POWERBI.md           this file
-D:\projects\retail-ai-pipeline\bi\MODEL.md                   design notes - read before an interview
-D:\projects\retail-ai-pipeline\bi\screenshots\              empty, for step 13
+fact_sales reconciles to GBP 10,247,353.28 over 19,773 invoices
 ```
+
+That leaves nine CSVs in `bi\model\`, `fact_sales.csv` being the 22 MB one.
+If you were handed a zip instead, unzip it so `bi\` sits inside the repo and
+skip to step 1.
+
 
 Anywhere else works for building — §1 makes the path a parameter, so nothing in
 the model is tied to a location. Inside the repo is where it needs to be for
