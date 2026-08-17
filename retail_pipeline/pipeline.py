@@ -18,10 +18,11 @@ import logging
 import os
 import sqlite3
 import time
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -52,16 +53,20 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 # 1. Extract
 # --------------------------------------------------------------------------- #
 
+
 def extract(cfg: dict, source: Path | None = None) -> pd.DataFrame:
     """Read the transaction feed and standardise names and types. Nothing is
     dropped here, so the quality report downstream describes the source rather
     than describing our own edits."""
     path = Path(source or cfg["paths"]["raw"])
     if not path.exists():
-        raise FileNotFoundError(f"{path} not found - run `python scripts/get_data.py` first.")
+        raise FileNotFoundError(
+            f"{path} not found - run `python scripts/get_data.py` first."
+        )
 
     df = pd.read_csv(
-        path, dtype={"InvoiceNo": "string", "StockCode": "string", "Description": "string"}
+        path,
+        dtype={"InvoiceNo": "string", "StockCode": "string", "Description": "string"},
     ).rename(columns=cfg["extract"]["column_map"])
 
     # A renamed or dropped source column is the most common way a pipeline like
@@ -87,14 +92,18 @@ def extract(cfg: dict, source: Path | None = None) -> pd.DataFrame:
         )
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
     df["unit_price"] = pd.to_numeric(df["unit_price"], errors="coerce")
-    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").astype("Int64")
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce").astype(
+        "Int64"
+    )
     df["stock_code"] = df["stock_code"].str.strip().str.upper()
     df["description"] = df["description"].str.strip()
 
     log.info(
         "Extracted %s rows | %s invoices | %s -> %s",
-        f"{len(df):,}", f"{df['invoice_no'].nunique():,}",
-        df["invoice_ts"].min().date(), df["invoice_ts"].max().date(),
+        f"{len(df):,}",
+        f"{df['invoice_no'].nunique():,}",
+        df["invoice_ts"].min().date(),
+        df["invoice_ts"].max().date(),
     )
     return df
 
@@ -103,49 +112,99 @@ def extract(cfg: dict, source: Path | None = None) -> pd.DataFrame:
 # 2. Data quality
 # --------------------------------------------------------------------------- #
 
+
 @dataclass(frozen=True)
 class Check:
     name: str
     dimension: str
-    blocking: bool          # blocking rows are quarantined; the rest are flagged
+    blocking: bool  # blocking rows are quarantined; the rest are flagged
     why: str
-    fn: Callable[[pd.DataFrame, dict], pd.Series]   # True = row FAILS
+    fn: Callable[[pd.DataFrame, dict], pd.Series]  # True = row FAILS
 
 
 CHECKS: list[Check] = [
-    Check("duplicate_line_items", "uniqueness", True,
-          "Same invoice/product/qty/price/timestamp twice - double-counts revenue",
-          lambda d, c: d.duplicated(
-              subset=["invoice_no", "stock_code", "quantity", "unit_price", "invoice_ts"])),
-    Check("missing_invoice_key", "completeness", True,
-          "Invoice, product or timestamp is null - the row cannot be modelled",
-          lambda d, c: d["invoice_no"].isna() | d["stock_code"].isna() | d["invoice_ts"].isna()),
-    Check("cancelled_invoice", "validity", True,
-          "'C'-prefixed invoices are cancellations, not sales",
-          lambda d, c: d["invoice_no"].fillna("").str.upper().str.startswith("C")),
-    Check("non_positive_quantity", "validity", True,
-          "Returns and stock adjustments",
-          lambda d, c: d["quantity"].isna() | (d["quantity"] <= 0)),
-    Check("non_positive_price", "validity", True,
-          "Zero-price giveaways and manual corrections",
-          lambda d, c: d["unit_price"].isna() | (d["unit_price"] < c["quality"]["min_unit_price"])),
-    Check("price_outlier", "validity", True,
-          "Above the configured cap - almost always an adjustment line",
-          lambda d, c: d["unit_price"] > c["quality"]["max_unit_price"]),
-    Check("non_product_stock_code", "consistency", True,
-          "POST, BANK CHARGES, M - real rows, but not sellable products",
-          lambda d, c: d["stock_code"].fillna("").str.upper().isin(
-              {x.upper() for x in c["quality"]["non_product_codes"]})),
-    Check("missing_description", "completeness", False,
-          "Degrades the recommender, not the sales facts",
-          lambda d, c: d["description"].isna() | (d["description"].fillna("").str.len() == 0)),
-    Check("missing_customer_id", "completeness", False,
-          "Guest checkout - fine for basket analysis, not for customer analytics",
-          lambda d, c: d["customer_id"].isna()),
+    Check(
+        "duplicate_line_items",
+        "uniqueness",
+        True,
+        "Same invoice/product/qty/price/timestamp twice - double-counts revenue",
+        lambda d, c: d.duplicated(
+            subset=["invoice_no", "stock_code", "quantity", "unit_price", "invoice_ts"]
+        ),
+    ),
+    Check(
+        "missing_invoice_key",
+        "completeness",
+        True,
+        "Invoice, product or timestamp is null - the row cannot be modelled",
+        lambda d, c: (
+            d["invoice_no"].isna() | d["stock_code"].isna() | d["invoice_ts"].isna()
+        ),
+    ),
+    Check(
+        "cancelled_invoice",
+        "validity",
+        True,
+        "'C'-prefixed invoices are cancellations, not sales",
+        lambda d, c: d["invoice_no"].fillna("").str.upper().str.startswith("C"),
+    ),
+    Check(
+        "non_positive_quantity",
+        "validity",
+        True,
+        "Returns and stock adjustments",
+        lambda d, c: d["quantity"].isna() | (d["quantity"] <= 0),
+    ),
+    Check(
+        "non_positive_price",
+        "validity",
+        True,
+        "Zero-price giveaways and manual corrections",
+        lambda d, c: (
+            d["unit_price"].isna() | (d["unit_price"] < c["quality"]["min_unit_price"])
+        ),
+    ),
+    Check(
+        "price_outlier",
+        "validity",
+        True,
+        "Above the configured cap - almost always an adjustment line",
+        lambda d, c: d["unit_price"] > c["quality"]["max_unit_price"],
+    ),
+    Check(
+        "non_product_stock_code",
+        "consistency",
+        True,
+        "POST, BANK CHARGES, M - real rows, but not sellable products",
+        lambda d, c: (
+            d["stock_code"]
+            .fillna("")
+            .str.upper()
+            .isin({x.upper() for x in c["quality"]["non_product_codes"]})
+        ),
+    ),
+    Check(
+        "missing_description",
+        "completeness",
+        False,
+        "Degrades the recommender, not the sales facts",
+        lambda d, c: (
+            d["description"].isna() | (d["description"].fillna("").str.len() == 0)
+        ),
+    ),
+    Check(
+        "missing_customer_id",
+        "completeness",
+        False,
+        "Guest checkout - fine for basket analysis, not for customer analytics",
+        lambda d, c: d["customer_id"].isna(),
+    ),
 ]
 
 
-def check_quality(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def check_quality(
+    df: pd.DataFrame, cfg: dict
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Return (clean rows, quarantined rows with reasons, per-rule results).
 
     Two decisions worth stating, because both are business calls rather than
@@ -160,18 +219,30 @@ def check_quality(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFra
       the rows re-admitted.
     """
     flags = pd.DataFrame(
-        {c.name: c.fn(df, cfg).fillna(True).astype(bool) for c in CHECKS}, index=df.index
+        {c.name: c.fn(df, cfg).fillna(True).astype(bool) for c in CHECKS},
+        index=df.index,
     )
-    results = pd.DataFrame([
-        {"check": c.name, "dimension": c.dimension, "blocking": c.blocking,
-         "failed_rows": int(flags[c.name].sum()),
-         "failed_pct": round(100 * flags[c.name].mean(), 3) if len(df) else 0.0,
-         "why": c.why}
-        for c in CHECKS
-    ])
+    results = pd.DataFrame(
+        [
+            {
+                "check": c.name,
+                "dimension": c.dimension,
+                "blocking": c.blocking,
+                "failed_rows": int(flags[c.name].sum()),
+                "failed_pct": round(100 * flags[c.name].mean(), 3) if len(df) else 0.0,
+                "why": c.why,
+            }
+            for c in CHECKS
+        ]
+    )
     for r in results.itertuples():
-        log.info("  %-24s %9s rows (%5.2f%%) %s", r.check, f"{r.failed_rows:,}",
-                 r.failed_pct, "[blocking]" if r.blocking else "")
+        log.info(
+            "  %-24s %9s rows (%5.2f%%) %s",
+            r.check,
+            f"{r.failed_rows:,}",
+            r.failed_pct,
+            "[blocking]" if r.blocking else "",
+        )
 
     blocking = [c.name for c in CHECKS if c.blocking]
     failed = flags[blocking].any(axis=1)
@@ -184,8 +255,12 @@ def check_quality(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFra
     clean = df[~failed].copy()
 
     rate = float(failed.mean()) if len(df) else 0.0
-    log.info("Quarantined %s of %s rows (%.2f%%)", f"{int(failed.sum()):,}", f"{len(df):,}",
-             100 * rate)
+    log.info(
+        "Quarantined %s of %s rows (%.2f%%)",
+        f"{int(failed.sum()):,}",
+        f"{len(df):,}",
+        100 * rate,
+    )
     if rate > cfg["quality"]["max_quarantine_rate"]:
         # Write the report BEFORE raising. The gate's message says "investigate
         # the source extract", and this report is the artefact an investigator
@@ -193,9 +268,16 @@ def check_quality(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFra
         # the previous run's green numbers in place, so the one run that needed
         # the report was the only run that did not produce it, and nothing in
         # the file said the run had failed at all.
-        write_quality_report(results, cfg, len(df), len(clean), len(quarantine),
-                             gate_failed=True, rate=rate,
-                             ceiling=cfg["quality"]["max_quarantine_rate"])
+        write_quality_report(
+            results,
+            cfg,
+            len(df),
+            len(clean),
+            len(quarantine),
+            gate_failed=True,
+            rate=rate,
+            ceiling=cfg["quality"]["max_quarantine_rate"],
+        )
         # Fail before loading, so a broken upstream extract leaves last night's
         # published data intact rather than replacing it with something thinner.
         raise ValueError(
@@ -205,24 +287,35 @@ def check_quality(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFra
     return clean, quarantine, results
 
 
-def write_quality_report(results: pd.DataFrame, cfg: dict, n_in: int, n_out: int, n_q: int,
-                         *, gate_failed: bool = False, rate: float | None = None,
-                         ceiling: float | None = None) -> None:
+def write_quality_report(
+    results: pd.DataFrame,
+    cfg: dict,
+    n_in: int,
+    n_out: int,
+    n_q: int,
+    *,
+    gate_failed: bool = False,
+    rate: float | None = None,
+    ceiling: float | None = None,
+) -> None:
     pct = 100 * n_q / n_in if n_in else 0.0
     lines = ["# Data quality report", ""]
     if gate_failed:
         # State the outcome at the top. A reader who sees only the table cannot
         # tell a published run from a rejected one.
         lines += [
-            f"> **GATE FAILED - NOTHING WAS PUBLISHED.** Quarantine rate {rate:.2%} "
-            f"exceeds the {ceiling:.0%} ceiling. The figures below describe the "
-            "*rejected* extract; the warehouse still holds the previous run's data.",
+            (
+                f"> **GATE FAILED - NOTHING WAS PUBLISHED.** Quarantine rate {rate:.2%} "
+                f"exceeds the {ceiling:.0%} ceiling. The figures below describe the "
+                "*rejected* extract; the warehouse still holds the previous run's data."
+            ),
             "",
         ]
     lines += [
         f"- Rows read: **{n_in:,}**",
         f"- Quarantined (failed a blocking rule): **{n_q:,}** ({pct:.2f}%)",
-        f"- {'Would have loaded' if gate_failed else 'Loaded'}: **{n_out:,}**", "",
+        f"- {'Would have loaded' if gate_failed else 'Loaded'}: **{n_out:,}**",
+        "",
         "| Check | Dimension | Blocking | Failed | % | What it means |",
         "|---|---|---|---|---|---|",
     ]
@@ -231,7 +324,10 @@ def write_quality_report(results: pd.DataFrame, cfg: dict, n_in: int, n_out: int
         f"| {r.failed_rows:,} | {r.failed_pct:.2f}% | {r.why} |"
         for r in results.itertuples()
     ]
-    lines += ["", "Rows can fail more than one check, so the column does not sum to the total."]
+    lines += [
+        "",
+        "Rows can fail more than one check, so the column does not sum to the total.",
+    ]
     (cfg["paths"]["reports"] / "data_quality_report.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
@@ -240,6 +336,7 @@ def write_quality_report(results: pd.DataFrame, cfg: dict, n_in: int, n_out: int
 # --------------------------------------------------------------------------- #
 # 3. Transform - a star schema
 # --------------------------------------------------------------------------- #
+
 
 def transform(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """fact_sales joined to dim_product / dim_customer / dim_date.
@@ -252,36 +349,73 @@ def transform(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     d["date_key"] = pd.to_datetime(d["invoice_ts"].dt.date)
     d["revenue"] = (d["quantity"] * d["unit_price"]).round(4)
 
-    fact = d[["invoice_no", "stock_code", "customer_id", "date_key", "invoice_ts",
-              "quantity", "unit_price", "revenue", "country"]].reset_index(drop=True)
+    fact = d[
+        [
+            "invoice_no",
+            "stock_code",
+            "customer_id",
+            "date_key",
+            "invoice_ts",
+            "quantity",
+            "unit_price",
+            "revenue",
+            "country",
+        ]
+    ].reset_index(drop=True)
 
     # Descriptions vary between rows for the same code; the most used one wins.
-    desc = (d.dropna(subset=["description"])
-              .groupby(["stock_code", "description"]).size().reset_index(name="n")
-              .sort_values(["stock_code", "n"], ascending=[True, False])
-              .drop_duplicates("stock_code")[["stock_code", "description"]])
+    desc = (
+        d.dropna(subset=["description"])
+        .groupby(["stock_code", "description"])
+        .size()
+        .reset_index(name="n")
+        .sort_values(["stock_code", "n"], ascending=[True, False])
+        .drop_duplicates("stock_code")[["stock_code", "description"]]
+    )
     dim_product = (
         d.groupby("stock_code")
-        .agg(n_invoices=("invoice_no", "nunique"), units_sold=("quantity", "sum"),
-             revenue=("revenue", "sum"), avg_unit_price=("unit_price", "mean"))
-        .reset_index().merge(desc, on="stock_code", how="left")
+        .agg(
+            n_invoices=("invoice_no", "nunique"),
+            units_sold=("quantity", "sum"),
+            revenue=("revenue", "sum"),
+            avg_unit_price=("unit_price", "mean"),
+        )
+        .reset_index()
+        .merge(desc, on="stock_code", how="left")
     )
     dim_product["description"] = dim_product["description"].fillna("UNKNOWN")
 
     known = d.dropna(subset=["customer_id"])
-    dim_customer = known.groupby("customer_id").agg(
-        country=("country", lambda s: s.mode().iat[0] if not s.mode().empty else "Unknown"),
-        n_invoices=("invoice_no", "nunique"), total_revenue=("revenue", "sum"),
-        first_order=("invoice_ts", "min"), last_order=("invoice_ts", "max"),
-    ).reset_index()
+    dim_customer = (
+        known.groupby("customer_id")
+        .agg(
+            country=(
+                "country",
+                lambda s: s.mode().iat[0] if not s.mode().empty else "Unknown",
+            ),
+            n_invoices=("invoice_no", "nunique"),
+            total_revenue=("revenue", "sum"),
+            first_order=("invoice_ts", "min"),
+            last_order=("invoice_ts", "max"),
+        )
+        .reset_index()
+    )
 
     dim_date = _date_dimension(d)
 
-    log.info("fact_sales %s rows | dim_product %s | dim_customer %s | dim_date %s",
-             f"{len(fact):,}", f"{len(dim_product):,}", f"{len(dim_customer):,}",
-             f"{len(dim_date):,}")
-    return {"fact_sales": fact, "dim_product": dim_product,
-            "dim_customer": dim_customer, "dim_date": dim_date}
+    log.info(
+        "fact_sales %s rows | dim_product %s | dim_customer %s | dim_date %s",
+        f"{len(fact):,}",
+        f"{len(dim_product):,}",
+        f"{len(dim_customer):,}",
+        f"{len(dim_date):,}",
+    )
+    return {
+        "fact_sales": fact,
+        "dim_product": dim_product,
+        "dim_customer": dim_customer,
+        "dim_date": dim_date,
+    }
 
 
 def _date_dimension(d: pd.DataFrame) -> pd.DataFrame:
@@ -295,7 +429,9 @@ def _date_dimension(d: pd.DataFrame) -> pd.DataFrame:
     observed = pd.to_datetime(pd.Series(d["invoice_ts"].dt.date.unique())).dropna()
     if observed.empty:
         raise ValueError("No valid timestamps - cannot build a date dimension.")
-    dim = pd.DataFrame({"date_key": pd.date_range(observed.min(), observed.max(), freq="D")})
+    dim = pd.DataFrame(
+        {"date_key": pd.date_range(observed.min(), observed.max(), freq="D")}
+    )
     dim["has_sales"] = dim["date_key"].isin(observed)
     dim["year"] = dim["date_key"].dt.year
     dim["month"] = dim["date_key"].dt.month
@@ -356,8 +492,12 @@ def _input_fingerprint(cfg: dict) -> dict:
             # disagree forever on byte-identical data. Pinning the terminator is
             # what makes the digest portable, which is the only way it can serve
             # as a provenance record at all.
-            payload = (df[cols].sort_values(cols, kind="stable")
-                       .to_csv(index=False, lineterminator="\n").encode())
+            payload = (
+                df[cols]
+                .sort_values(cols, kind="stable")
+                .to_csv(index=False, lineterminator="\n")
+                .encode()
+            )
             rows = len(df)
         else:
             payload = p.read_bytes()
@@ -371,8 +511,10 @@ def _input_fingerprint(cfg: dict) -> dict:
     return out
 
 
-_INDEXES = ("CREATE INDEX IF NOT EXISTS ix_fact_stock ON fact_sales(stock_code)",
-            "CREATE INDEX IF NOT EXISTS ix_fact_date ON fact_sales(date_key)")
+_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS ix_fact_stock ON fact_sales(stock_code)",
+    "CREATE INDEX IF NOT EXISTS ix_fact_date ON fact_sales(date_key)",
+)
 
 
 def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
@@ -451,7 +593,7 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
                     if "no such table" not in str(exc):
                         raise
     except BaseException:
-        for tmp, _ in staged:               # publish nothing on the way out
+        for tmp, _ in staged:  # publish nothing on the way out
             tmp.unlink(missing_ok=True)
         raise
 
@@ -463,9 +605,18 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
 
 # --------------------------------------------------------------------------- #
 
-def write_run_metrics(cfg: dict, *, n_raw: int, n_quarantined: int, n_clean: int,
-                      n_products: int, recs: pd.DataFrame,
-                      adoption_headline: pd.DataFrame, runtime_seconds: float) -> dict:
+
+def write_run_metrics(
+    cfg: dict,
+    *,
+    n_raw: int,
+    n_quarantined: int,
+    n_clean: int,
+    n_products: int,
+    recs: pd.DataFrame,
+    adoption_headline: pd.DataFrame,
+    runtime_seconds: float,
+) -> dict:
     """Assemble and write reports/run_metrics.json.
 
     Factored out of run() because run() is not the code path production uses.
@@ -484,7 +635,10 @@ def write_run_metrics(cfg: dict, *, n_raw: int, n_quarantined: int, n_clean: int
         "products": n_products,
         "recommendations": len(recs),
         "catalogue_coverage_pct": round(
-            100 * recs["stock_code"].nunique() / n_products, 1) if n_products else 0.0,
+            100 * recs["stock_code"].nunique() / n_products, 1
+        )
+        if n_products
+        else 0.0,
         "adoption": {r.metric: r.value for r in adoption_headline.itertuples()},
         # Fingerprint the telemetry input. generate_events() in scripts/get_data.py
         # is seeded and deterministic, but the pipeline reads whatever
@@ -511,18 +665,27 @@ def run(config_path: str | None = None) -> dict:
     for key in ("processed", "reports"):
         cfg["paths"][key].mkdir(parents=True, exist_ok=True)
 
-    log.info("--- 1/5 extract");        raw = extract(cfg)
-    log.info("--- 2/5 data quality");   clean, quarantine, results = check_quality(raw, cfg)
+    log.info("--- 1/5 extract")
+    raw = extract(cfg)
+    log.info("--- 2/5 data quality")
+    clean, quarantine, results = check_quality(raw, cfg)
     write_quality_report(results, cfg, len(raw), len(clean), len(quarantine))
-    log.info("--- 3/5 transform");      tables = transform(clean)
-    log.info("--- 4/5 recommend");      recs = recommend(tables, cfg)
-    log.info("--- 5/5 adoption");       adoption = measure_adoption(cfg)
+    log.info("--- 3/5 transform")
+    tables = transform(clean)
+    log.info("--- 4/5 recommend")
+    recs = recommend(tables, cfg)
+    log.info("--- 5/5 adoption")
+    adoption = measure_adoption(cfg)
 
     load({**tables, "quarantine": quarantine, "recommendations": recs, **adoption}, cfg)
 
     metrics = write_run_metrics(
-        cfg, n_raw=len(raw), n_quarantined=len(quarantine), n_clean=len(clean),
-        n_products=len(tables["dim_product"]), recs=recs,
+        cfg,
+        n_raw=len(raw),
+        n_quarantined=len(quarantine),
+        n_clean=len(clean),
+        n_products=len(tables["dim_product"]),
+        recs=recs,
         adoption_headline=adoption["adoption_headline"],
         runtime_seconds=time.perf_counter() - started,
     )

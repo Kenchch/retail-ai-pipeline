@@ -15,18 +15,25 @@ import pytest
 from retail_pipeline import adoption as adoption_mod
 from retail_pipeline.adoption import headline_metrics, team_metrics, weekly_metrics
 from retail_pipeline.pipeline import (
-    CHECKS, _input_fingerprint, check_quality, extract, load_config, transform,
+    CHECKS,
+    _input_fingerprint,
+    check_quality,
+    extract,
+    load_config,
+    transform,
 )
 from retail_pipeline.recommend import COLUMNS, recommend
 
-HEADER = ("InvoiceNo,StockCode,Description,Quantity,InvoiceDate,"
-          "UnitPrice,CustomerID,Country\n")
+HEADER = (
+    "InvoiceNo,StockCode,Description,Quantity,InvoiceDate,"
+    "UnitPrice,CustomerID,Country\n"
+)
 
 
 @pytest.fixture()
 def cfg():
     c = load_config()
-    c["quality"]["max_quarantine_rate"] = 1.0   # the sample below is mostly broken
+    c["quality"]["max_quarantine_rate"] = 1.0  # the sample below is mostly broken
     # The synthetic event frames here are dated around the launch, not around
     # config's pinned analysis date, so they measure back from their own newest
     # event. test_analysis_as_of_is_honoured_and_shared covers the pinned path.
@@ -38,18 +45,110 @@ def cfg():
 def sample():
     """Nine rows, each breaking exactly one known rule."""
     rows = [
-        ("536365", "85123A", "WHITE MUG", 6, "2010-12-01 08:26", 2.55, 17850, "UK"),   # clean
-        ("536365", "71053", "LANTERN", 2, "2010-12-01 08:26", 3.39, 17850, "UK"),      # clean
-        ("536365", "85123A", "WHITE MUG", 6, "2010-12-01 08:26", 2.55, 17850, "UK"),   # duplicate
-        ("C536379", "22633", "GAME SET", 1, "2010-12-01 09:41", 4.95, 14527, "UK"),    # cancelled
-        ("536380", "22960", "JAM JAR", -3, "2010-12-01 10:02", 4.25, 17850, "UK"),     # negative
-        ("536381", "22961", "TEA SET", 1, "2010-12-01 10:05", 0.00, 17850, "UK"),      # zero price
-        ("536382", "22962", "RARE", 1, "2010-12-01 10:07", 5000.0, 17850, "UK"),       # outlier
-        ("536383", "POST", "POSTAGE", 1, "2010-12-01 10:09", 18.0, 12583, "FR"),       # not a product
-        ("536384", "22963", None, 4, "2010-12-01 10:11", 1.25, None, "UK"),            # guest, no desc
+        (
+            "536365",
+            "85123A",
+            "WHITE MUG",
+            6,
+            "2010-12-01 08:26",
+            2.55,
+            17850,
+            "UK",
+        ),  # clean
+        (
+            "536365",
+            "71053",
+            "LANTERN",
+            2,
+            "2010-12-01 08:26",
+            3.39,
+            17850,
+            "UK",
+        ),  # clean
+        (
+            "536365",
+            "85123A",
+            "WHITE MUG",
+            6,
+            "2010-12-01 08:26",
+            2.55,
+            17850,
+            "UK",
+        ),  # duplicate
+        (
+            "C536379",
+            "22633",
+            "GAME SET",
+            1,
+            "2010-12-01 09:41",
+            4.95,
+            14527,
+            "UK",
+        ),  # cancelled
+        (
+            "536380",
+            "22960",
+            "JAM JAR",
+            -3,
+            "2010-12-01 10:02",
+            4.25,
+            17850,
+            "UK",
+        ),  # negative
+        (
+            "536381",
+            "22961",
+            "TEA SET",
+            1,
+            "2010-12-01 10:05",
+            0.00,
+            17850,
+            "UK",
+        ),  # zero price
+        (
+            "536382",
+            "22962",
+            "RARE",
+            1,
+            "2010-12-01 10:07",
+            5000.0,
+            17850,
+            "UK",
+        ),  # outlier
+        (
+            "536383",
+            "POST",
+            "POSTAGE",
+            1,
+            "2010-12-01 10:09",
+            18.0,
+            12583,
+            "FR",
+        ),  # not a product
+        (
+            "536384",
+            "22963",
+            None,
+            4,
+            "2010-12-01 10:11",
+            1.25,
+            None,
+            "UK",
+        ),  # guest, no desc
     ]
-    df = pd.DataFrame(rows, columns=["invoice_no", "stock_code", "description", "quantity",
-                                     "invoice_ts", "unit_price", "customer_id", "country"])
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "invoice_no",
+            "stock_code",
+            "description",
+            "quantity",
+            "invoice_ts",
+            "unit_price",
+            "customer_id",
+            "country",
+        ],
+    )
     df["invoice_ts"] = pd.to_datetime(df["invoice_ts"])
     for col in ("invoice_no", "stock_code", "description"):
         df[col] = df[col].astype("string")
@@ -68,8 +167,17 @@ def events():
         ("2026-04-07 09:00", "U2", "Merchandising", "view", "S1", None),
         ("2026-04-07 09:10", "U2", "Merchandising", "feedback", None, 5),
     ]
-    df = pd.DataFrame(rows, columns=["event_ts", "user_id", "team", "event_type",
-                                     "stock_code", "feedback_score"])
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "event_ts",
+            "user_id",
+            "team",
+            "event_type",
+            "stock_code",
+            "feedback_score",
+        ],
+    )
     df["event_ts"] = pd.to_datetime(df["event_ts"])
     df["week_start"] = df["event_ts"].dt.to_period("W-SUN").dt.start_time
     return df
@@ -77,12 +185,19 @@ def events():
 
 # --- data quality ---------------------------------------------------------- #
 
+
 def test_every_rule_fires_exactly_once(sample, cfg):
     _, _, results = check_quality(sample, cfg)
     assert dict(zip(results["check"], results["failed_rows"], strict=True)) == {
-        "duplicate_line_items": 1, "missing_invoice_key": 0, "cancelled_invoice": 1,
-        "non_positive_quantity": 1, "non_positive_price": 1, "price_outlier": 1,
-        "non_product_stock_code": 1, "missing_description": 1, "missing_customer_id": 1,
+        "duplicate_line_items": 1,
+        "missing_invoice_key": 0,
+        "cancelled_invoice": 1,
+        "non_positive_quantity": 1,
+        "non_positive_price": 1,
+        "price_outlier": 1,
+        "non_product_stock_code": 1,
+        "missing_description": 1,
+        "missing_customer_id": 1,
     }
     assert len({c.name for c in CHECKS}) == len(CHECKS)
 
@@ -90,9 +205,12 @@ def test_every_rule_fires_exactly_once(sample, cfg):
 def test_quarantine_keeps_the_reasons_and_the_flagged_rows(sample, cfg):
     clean, quarantine, _ = check_quality(sample, cfg)
     assert len(clean) == 3 and len(quarantine) == 6
-    assert "cancelled_invoice" in dict(zip(quarantine["invoice_no"],
-                                           quarantine["reasons"],
-                                           strict=True))["C536379"]
+    assert (
+        "cancelled_invoice"
+        in dict(zip(quarantine["invoice_no"], quarantine["reasons"], strict=True))[
+            "C536379"
+        ]
+    )
     # A guest checkout with a blank description is still a real sale.
     assert "536384" in set(clean["invoice_no"])
 
@@ -119,11 +237,12 @@ def test_a_failed_gate_still_writes_the_quality_report(sample, cfg, tmp_path):
 
     text = report.read_text(encoding="utf-8")
     assert "GATE FAILED" in text and "NOTHING WAS PUBLISHED" in text
-    assert "stale" not in text                      # it was actually rewritten
-    assert "Would have loaded" in text              # not reported as published
+    assert "stale" not in text  # it was actually rewritten
+    assert "Would have loaded" in text  # not reported as published
 
 
 # --- star schema ----------------------------------------------------------- #
+
 
 def test_star_schema_keys_and_referential_integrity(sample, cfg):
     clean, _, _ = check_quality(sample, cfg)
@@ -131,7 +250,7 @@ def test_star_schema_keys_and_referential_integrity(sample, cfg):
     assert t["dim_product"]["stock_code"].is_unique
     assert set(t["fact_sales"]["stock_code"]) <= set(t["dim_product"]["stock_code"])
     assert set(t["fact_sales"]["date_key"]) <= set(t["dim_date"]["date_key"])
-    assert "description" not in t["fact_sales"].columns     # attributes live in dimensions
+    assert "description" not in t["fact_sales"].columns  # attributes live in dimensions
 
 
 def test_dim_date_is_a_continuous_calendar(sample, cfg):
@@ -141,7 +260,8 @@ def test_dim_date_is_a_continuous_calendar(sample, cfg):
     clean.loc[clean.index[-1], "invoice_ts"] += pd.Timedelta(days=7)
     dim = transform(clean)["dim_date"]
     assert list(dim["date_key"]) == list(
-        pd.date_range(dim["date_key"].min(), dim["date_key"].max(), freq="D"))
+        pd.date_range(dim["date_key"].min(), dim["date_key"].max(), freq="D")
+    )
     assert (~dim["has_sales"]).any()
 
 
@@ -154,14 +274,23 @@ def test_a_changed_source_schema_names_itself(cfg, tmp_path):
 
 # --- recommendations ------------------------------------------------------- #
 
+
 def _basket_tables():
     """20 baskets of A+B, 20 of C+D. A and B never appear apart."""
     rows = [(f"I{i}", p) for i in range(20) for p in "AB"]
     rows += [(f"J{i}", p) for i in range(20) for p in "CD"]
     fact = pd.DataFrame(rows, columns=["invoice_no", "stock_code"])
-    dim = pd.DataFrame({"stock_code": list("ABCD"),
-                        "description": ["RED MUG LARGE", "RED MUG SMALL",
-                                        "BLUE PLATE ROUND", "BLUE PLATE SQUARE"]})
+    dim = pd.DataFrame(
+        {
+            "stock_code": list("ABCD"),
+            "description": [
+                "RED MUG LARGE",
+                "RED MUG SMALL",
+                "BLUE PLATE ROUND",
+                "BLUE PLATE SQUARE",
+            ],
+        }
+    )
     return {"fact_sales": fact, "dim_product": dim}
 
 
@@ -203,13 +332,15 @@ def test_oversized_baskets_count_in_the_denominator(cfg):
     real rule. Here A appears in 3 baskets, one of them over the cap, and
     pairs with B in one of the two countable ones.
     """
-    cfg["recommend"].update(min_support_count=1, min_confidence=0.0, min_lift=0.0,
-                            max_basket_size=3)
+    cfg["recommend"].update(
+        min_support_count=1, min_confidence=0.0, min_lift=0.0, max_basket_size=3
+    )
     rows = [("I1", "A"), ("I2", "A"), ("I2", "B")]
-    rows += [("I3", p) for p in ("A", "B", "C", "D", "E")]      # 5 items > cap 3
+    rows += [("I3", p) for p in ("A", "B", "C", "D", "E")]  # 5 items > cap 3
     fact = pd.DataFrame(rows, columns=["invoice_no", "stock_code"])
-    dim = pd.DataFrame({"stock_code": list("ABCDE"),
-                        "description": [f"D{x}" for x in "ABCDE"]})
+    dim = pd.DataFrame(
+        {"stock_code": list("ABCDE"), "description": [f"D{x}" for x in "ABCDE"]}
+    )
     recs = recommend({"fact_sales": fact, "dim_product": dim}, cfg)
 
     ab = recs[(recs.stock_code == "A") & (recs.recommended_stock_code == "B")]
@@ -227,9 +358,11 @@ def test_lift_is_computed_correctly(cfg):
     assert ab["confidence"].iat[0] == 1.0 and ab["support"].iat[0] == 0.5
     assert round(ab["lift"].iat[0], 6) == 2.0
     # Products from disjoint baskets never produce a rule.
-    assert recs[(recs["stock_code"] == "A")
-                & (recs["recommended_stock_code"] == "C")
-                & (recs["method"] == "co_purchase")].empty
+    assert recs[
+        (recs["stock_code"] == "A")
+        & (recs["recommended_stock_code"] == "C")
+        & (recs["method"] == "co_purchase")
+    ].empty
 
 
 def test_an_empty_fact_table_returns_the_schema_rather_than_raising(cfg):
@@ -245,10 +378,15 @@ def test_an_empty_fact_table_returns_the_schema_rather_than_raising(cfg):
     accessor then raises an AttributeError naming that dtype instead of naming
     the empty input.
     """
-    empty = pd.DataFrame({"invoice_no": [], "stock_code": []})   # -> float64
+    empty = pd.DataFrame({"invoice_no": [], "stock_code": []})  # -> float64
     assert empty["stock_code"].dtype == "float64", "fixture must be dtype-less"
-    recs = recommend({"fact_sales": empty,
-                      "dim_product": pd.DataFrame({"stock_code": [], "description": []})}, cfg)
+    recs = recommend(
+        {
+            "fact_sales": empty,
+            "dim_product": pd.DataFrame({"stock_code": [], "description": []}),
+        },
+        cfg,
+    )
     assert recs.empty and list(recs.columns) == COLUMNS
 
 
@@ -257,19 +395,20 @@ def test_an_empty_result_still_has_its_schema(cfg):
     consumer can read, and it makes SQLite fail on `CREATE TABLE x ()`."""
     cfg["recommend"]["min_support_count"] = 10_000
     tables = _basket_tables()
-    tables["dim_product"]["description"] = "UNKNOWN"     # kills the fallback too
+    tables["dim_product"]["description"] = "UNKNOWN"  # kills the fallback too
     recs = recommend(tables, cfg)
     assert recs.empty and list(recs.columns) == COLUMNS
 
 
 # --- adoption -------------------------------------------------------------- #
 
+
 def test_reach_divides_by_the_roster_not_by_who_showed_up(events, cfg):
     cfg["adoption"]["roster"] = {"Category Management": 1, "Merchandising": 4}
     cfg["adoption"]["licensed_users"] = 5
     t = team_metrics(events, cfg).set_index("team")
     assert t.loc["Category Management", "reach_pct"] == 100.0
-    assert t.loc["Merchandising", "reach_pct"] == 25.0      # 1 active of 4 licensed
+    assert t.loc["Merchandising", "reach_pct"] == 25.0  # 1 active of 4 licensed
 
 
 def test_analysis_as_of_is_honoured_and_shared(events, cfg):
@@ -291,14 +430,23 @@ def test_analysis_as_of_is_honoured_and_shared(events, cfg):
     # A bare date means the END of that day, or "as of 1 August" would drop
     # everything that happened on 1 August.
     assert as_of == pd.Timestamp("2026-08-01 23:59:59.999999999")
-    assert headline_metrics(events, cfg, as_of).set_index("metric").loc["reach_pct", "value"] == 0.0
+    assert (
+        headline_metrics(events, cfg, as_of)
+        .set_index("metric")
+        .loc["reach_pct", "value"]
+        == 0.0
+    )
     assert team_metrics(events, cfg, as_of)["active_users"].sum() == 0
 
     # Pinned to the launch week, the same events are inside it for both tables -
     # including U2's 09:00 event on the as_of date itself.
     cfg["adoption"]["analysis_as_of"] = "2026-04-07"
     as_of = adoption_mod.resolve_as_of(events, cfg)
-    h = headline_metrics(events, cfg, as_of).set_index("metric").loc["reach_pct", "value"]
+    h = (
+        headline_metrics(events, cfg, as_of)
+        .set_index("metric")
+        .loc["reach_pct", "value"]
+    )
     t = team_metrics(events, cfg, as_of)
     assert h == 100.0 and t["active_users"].sum() == 2
 
@@ -338,11 +486,22 @@ def test_a_team_with_zero_adoption_shows_zero_rather_than_vanishing(events, cfg)
 
 def test_a_week_with_no_activity_stays_in_the_trend(cfg):
     """Dropping it closes the gap and shifts every later week one position left."""
-    rows = [("2026-04-06 10:00", "U1", "T", "view", "S1", None),
-            ("2026-04-06 10:01", "U1", "T", "apply", "S1", None),
-            ("2026-04-20 10:00", "U1", "T", "view", "S1", None)]   # week 2 empty
-    df = pd.DataFrame(rows, columns=["event_ts", "user_id", "team", "event_type",
-                                     "stock_code", "feedback_score"])
+    rows = [
+        ("2026-04-06 10:00", "U1", "T", "view", "S1", None),
+        ("2026-04-06 10:01", "U1", "T", "apply", "S1", None),
+        ("2026-04-20 10:00", "U1", "T", "view", "S1", None),
+    ]  # week 2 empty
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "event_ts",
+            "user_id",
+            "team",
+            "event_type",
+            "stock_code",
+            "feedback_score",
+        ],
+    )
     df["event_ts"] = pd.to_datetime(df["event_ts"])
     w = weekly_metrics(df, cfg)
     assert list(w["week_no"]) == [1, 2, 3]
@@ -355,22 +514,34 @@ def test_a_week_with_no_activity_stays_in_the_trend(cfg):
 
 def test_a_metric_with_no_data_is_not_a_failing_metric(events, cfg):
     """Nobody answering the survey is not everybody being unhappy."""
-    h = headline_metrics(events[events["event_type"] != "feedback"], cfg).set_index("metric")
+    h = headline_metrics(events[events["event_type"] != "feedback"], cfg).set_index(
+        "metric"
+    )
     assert pd.isna(h.loc["csat", "value"]) and h.loc["csat", "status"] == "no data"
 
 
 def test_no_usage_at_all_reports_zeros_rather_than_failing(cfg):
-    empty = pd.DataFrame(columns=["event_ts", "user_id", "team", "event_type",
-                                  "stock_code", "feedback_score", "week_start"])
+    empty = pd.DataFrame(
+        columns=[
+            "event_ts",
+            "user_id",
+            "team",
+            "event_type",
+            "stock_code",
+            "feedback_score",
+            "week_start",
+        ]
+    )
     empty["event_ts"] = pd.to_datetime(empty["event_ts"])
     h = headline_metrics(empty, cfg).set_index("metric")
     t = team_metrics(empty, cfg)
     assert h.loc["reach_pct", "value"] == 0.0
-    assert len(t) == len(cfg["adoption"]["roster"])   # every team still listed
+    assert len(t) == len(cfg["adoption"]["roster"])  # every team still listed
     assert weekly_metrics(empty, cfg).empty
 
 
 # --- provenance ------------------------------------------------------------ #
+
 
 def test_the_input_digest_is_the_same_on_windows_and_linux(cfg, tmp_path):
     """The digest exists to answer "could this input have produced different
@@ -412,19 +583,31 @@ def test_headline_and_team_reach_share_one_denominator(cfg):
     in headline's numerator and excluded from its denominator, while the by-team
     table repaired its own copy - so the two tables divided by different totals
     and headline could exceed 100%."""
-    rows = [("2026-04-06 10:00", f"U{i}", "Ghost Team", "view", "S1", None) for i in range(20)]
+    rows = [
+        ("2026-04-06 10:00", f"U{i}", "Ghost Team", "view", "S1", None)
+        for i in range(20)
+    ]
     rows += [("2026-04-06 10:00", "K1", "Category Management", "view", "S1", None)]
-    df = pd.DataFrame(rows, columns=["event_ts", "user_id", "team", "event_type",
-                                     "stock_code", "feedback_score"])
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "event_ts",
+            "user_id",
+            "team",
+            "event_type",
+            "stock_code",
+            "feedback_score",
+        ],
+    )
     df["event_ts"] = pd.to_datetime(df["event_ts"])
     cfg["adoption"]["roster"] = {"Category Management": 1}
-    cfg["adoption"]["licensed_users"] = 1          # the stale configured total
+    cfg["adoption"]["licensed_users"] = 1  # the stale configured total
 
     h = headline_metrics(df, cfg).set_index("metric")
     t = team_metrics(df, cfg)
 
     assert h.loc["reach_pct", "value"] <= 100.0
-    assert int(t["licensed_users"].sum()) == 21     # 1 configured + 20 observed
+    assert int(t["licensed_users"].sum()) == 21  # 1 configured + 20 observed
     assert h.loc["reach_pct", "value"] == round(100 * 21 / 21, 1)
     assert set(t["team"]) == {"Category Management", "Ghost Team"}
 
@@ -434,31 +617,56 @@ def test_load_publishes_neither_layer_when_sqlite_fails(cfg, tmp_path, monkeypat
     never made the multi-table replace atomic: a mid-load failure left fact_sales
     from tonight beside dim_product from last night, in both Parquet and SQLite."""
     import pandas as _pd
+
     from retail_pipeline import pipeline as P
 
-    cfg["paths"] = dict(cfg["paths"], processed=tmp_path / "processed",
-                        warehouse=tmp_path / "wh" / "retail.db")
-    old = {"dim_product": _pd.DataFrame({"stock_code": ["OLD"], "description": ["last night"]}),
-           "fact_sales": _pd.DataFrame({"stock_code": ["OLD"], "date_key": ["2026-01-01"]})}
+    cfg["paths"] = dict(
+        cfg["paths"],
+        processed=tmp_path / "processed",
+        warehouse=tmp_path / "wh" / "retail.db",
+    )
+    old = {
+        "dim_product": _pd.DataFrame(
+            {"stock_code": ["OLD"], "description": ["last night"]}
+        ),
+        "fact_sales": _pd.DataFrame(
+            {"stock_code": ["OLD"], "date_key": ["2026-01-01"]}
+        ),
+    }
     P.load(old, cfg)
 
     real = _pd.DataFrame.to_sql
+
     def boom(self, name, con, **kw):
         if name.startswith("dim_product"):
             raise RuntimeError("worker killed mid-load")
         return real(self, name, con, **kw)
+
     monkeypatch.setattr(_pd.DataFrame, "to_sql", boom)
 
-    new = {"dim_product": _pd.DataFrame({"stock_code": ["NEW"], "description": ["tonight"]}),
-           "fact_sales": _pd.DataFrame({"stock_code": ["NEW"], "date_key": ["2026-02-02"]})}
+    new = {
+        "dim_product": _pd.DataFrame(
+            {"stock_code": ["NEW"], "description": ["tonight"]}
+        ),
+        "fact_sales": _pd.DataFrame(
+            {"stock_code": ["NEW"], "date_key": ["2026-02-02"]}
+        ),
+    }
     with pytest.raises(RuntimeError, match="worker killed"):
         P.load(new, cfg)
 
     import sqlite3
+
     with sqlite3.connect(cfg["paths"]["warehouse"]) as conn:
-        assert conn.execute("SELECT stock_code FROM fact_sales").fetchall() == [("OLD",)]
-        assert conn.execute("SELECT stock_code FROM dim_product").fetchall() == [("OLD",)]
+        assert conn.execute("SELECT stock_code FROM fact_sales").fetchall() == [
+            ("OLD",)
+        ]
+        assert conn.execute("SELECT stock_code FROM dim_product").fetchall() == [
+            ("OLD",)
+        ]
     for name in ("fact_sales", "dim_product"):
         got = _pd.read_parquet(cfg["paths"]["processed"] / f"{name}.parquet")
-        assert list(got["stock_code"]) == ["OLD"], f"{name} parquet was published anyway"
-    assert not list(cfg["paths"]["processed"].glob("*.tmp"))   # no sidecars left behind
+        assert list(got["stock_code"]) == ["OLD"], (
+            f"{name} parquet was published anyway"
+        )
+    assert not list(cfg["paths"]["processed"].glob("*.tmp"))  # no sidecars left behind
