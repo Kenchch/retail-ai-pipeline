@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -30,13 +30,17 @@ from airflow.operators.python import PythonOperator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from retail_pipeline.adoption import measure_adoption            # noqa: E402
-from retail_pipeline.pipeline import (                           # noqa: E402
-    check_quality, extract, load, load_config, transform, write_quality_report,
+from retail_pipeline.adoption import measure_adoption
+from retail_pipeline.pipeline import (
+    check_quality,
+    extract,
+    load,
+    load_config,
+    transform,
+    write_quality_report,
     write_run_metrics,
 )
-from retail_pipeline.recommend import recommend                  # noqa: E402
-
+from retail_pipeline.recommend import recommend
 
 STAGING_RETENTION_DAYS = 7
 
@@ -86,7 +90,7 @@ def task_quality(**context):
     cfg = load_config()
     run_id = context["run_id"]
     raw = _read_staged(cfg, "raw", run_id, "extract")
-    clean, quarantine, results = check_quality(raw, cfg)   # raises -> DAG stops here
+    clean, quarantine, results = check_quality(raw, cfg)  # raises -> DAG stops here
     write_quality_report(results, cfg, len(raw), len(clean), len(quarantine))
     clean.to_parquet(_staging(cfg, "clean", run_id), index=False)
     quarantine.to_parquet(_staging(cfg, "quarantine", run_id), index=False)
@@ -96,7 +100,9 @@ def task_transform(**context):
     """Builds the star schema into staging. Publishing is `publish`'s job."""
     cfg = load_config()
     run_id = context["run_id"]
-    for name, df in transform(_read_staged(cfg, "clean", run_id, "data_quality_gate")).items():
+    for name, df in transform(
+        _read_staged(cfg, "clean", run_id, "data_quality_gate")
+    ).items():
         df.to_parquet(_staging(cfg, name, run_id), index=False)
 
 
@@ -107,9 +113,13 @@ def task_recommend(**context):
     # published copy made tonight's recommendations depend on tonight's facts
     # having already been published, which is what forced the split publish
     # this DAG used to do.
-    tables = {n: _read_staged(cfg, n, run_id, "transform")
-              for n in ("fact_sales", "dim_product")}
-    recommend(tables, cfg).to_parquet(_staging(cfg, "recommendations", run_id), index=False)
+    tables = {
+        n: _read_staged(cfg, n, run_id, "transform")
+        for n in ("fact_sales", "dim_product")
+    }
+    recommend(tables, cfg).to_parquet(
+        _staging(cfg, "recommendations", run_id), index=False
+    )
 
 
 def task_adoption(**context):
@@ -144,12 +154,30 @@ def task_publish(**context):
     transaction, so the warehouse only ever holds one run's output."""
     cfg = load_config()
     run_id = context["run_id"]
-    names = ("fact_sales", "dim_product", "dim_customer", "dim_date", "quarantine",
-             "recommendations", "adoption_headline", "adoption_weekly", "adoption_by_team")
-    produced = {"quarantine": "data_quality_gate", "recommendations": "build_recommendations"}
+    names = (
+        "fact_sales",
+        "dim_product",
+        "dim_customer",
+        "dim_date",
+        "quarantine",
+        "recommendations",
+        "adoption_headline",
+        "adoption_weekly",
+        "adoption_by_team",
+    )
+    produced = {
+        "quarantine": "data_quality_gate",
+        "recommendations": "build_recommendations",
+    }
     tables = {
-        n: _read_staged(cfg, n, run_id,
-                        produced.get(n, "measure_adoption" if n.startswith("adoption") else "transform"))
+        n: _read_staged(
+            cfg,
+            n,
+            run_id,
+            produced.get(
+                n, "measure_adoption" if n.startswith("adoption") else "transform"
+            ),
+        )
         for n in names
     }
     load(tables, cfg)
@@ -171,16 +199,23 @@ def task_run_metrics(**_):
     cfg = load_config()
     recs = pd.read_parquet(cfg["paths"]["processed"] / "recommendations.parquet")
     dim_product = pd.read_parquet(cfg["paths"]["processed"] / "dim_product.parquet")
-    fact = pd.read_parquet(cfg["paths"]["processed"] / "fact_sales.parquet",
-                           columns=["invoice_no"])
-    quarantine = pd.read_parquet(cfg["paths"]["processed"] / "quarantine.parquet",
-                                 columns=["invoice_no"])
+    fact = pd.read_parquet(
+        cfg["paths"]["processed"] / "fact_sales.parquet", columns=["invoice_no"]
+    )
+    quarantine = pd.read_parquet(
+        cfg["paths"]["processed"] / "quarantine.parquet", columns=["invoice_no"]
+    )
     headline = pd.read_parquet(cfg["paths"]["processed"] / "adoption_headline.parquet")
     n_clean, n_q = len(fact), len(quarantine)
     write_run_metrics(
-        cfg, n_raw=n_clean + n_q, n_quarantined=n_q, n_clean=n_clean,
-        n_products=len(dim_product), recs=recs, adoption_headline=headline,
-        runtime_seconds=0.0,   # per-task durations live in the Airflow UI
+        cfg,
+        n_raw=n_clean + n_q,
+        n_quarantined=n_q,
+        n_clean=n_clean,
+        n_products=len(dim_product),
+        recs=recs,
+        adoption_headline=headline,
+        runtime_seconds=0.0,  # per-task durations live in the Airflow UI
     )
 
 
@@ -220,11 +255,15 @@ def task_prune_staging(**_):
 with DAG(
     dag_id="retail_ai_pipeline",
     description="Ingest retail transactions, gate on data quality, publish the sales "
-                "star schema, product recommendations and adoption reporting",
-    default_args={"owner": "data-platform", "retries": 2,
-                  "retry_delay": timedelta(minutes=5), "email_on_failure": True},
-    start_date=datetime(2026, 1, 1),
-    schedule="0 4 * * *",          # nightly, after end-of-day close
+    "star schema, product recommendations and adoption reporting",
+    default_args={
+        "owner": "data-platform",
+        "retries": 2,
+        "retry_delay": timedelta(minutes=5),
+        "email_on_failure": True,
+    },
+    start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    schedule="0 4 * * *",  # nightly, after end-of-day close
     catchup=False,
     max_active_runs=1,
     tags=["retail", "etl", "data-quality", "recommendations"],
@@ -235,12 +274,21 @@ with DAG(
     t4 = PythonOperator(task_id="build_recommendations", python_callable=task_recommend)
     t5 = PythonOperator(task_id="measure_adoption", python_callable=task_adoption)
     t6 = PythonOperator(task_id="publish", python_callable=task_publish)
-    t7 = PythonOperator(task_id="write_run_metrics", python_callable=task_run_metrics,
-                        trigger_rule="all_success")
-    t8 = PythonOperator(task_id="clear_staging", python_callable=task_clear_staging,
-                        trigger_rule="all_success")
-    t9 = PythonOperator(task_id="prune_staging", python_callable=task_prune_staging,
-                        trigger_rule="all_done")
+    t7 = PythonOperator(
+        task_id="write_run_metrics",
+        python_callable=task_run_metrics,
+        trigger_rule="all_success",
+    )
+    t8 = PythonOperator(
+        task_id="clear_staging",
+        python_callable=task_clear_staging,
+        trigger_rule="all_success",
+    )
+    t9 = PythonOperator(
+        task_id="prune_staging",
+        python_callable=task_prune_staging,
+        trigger_rule="all_done",
+    )
 
     # Everything upstream of `publish` computes into per-run staging and touches
     # nothing a reader can see. `publish` is the only writer, so the warehouse

@@ -49,9 +49,18 @@ log = logging.getLogger("pipeline")
 
 # An empty result is still a table with these columns. A zero-column DataFrame
 # is not "no recommendations", it is a shape no consumer can read.
-COLUMNS = ["stock_code", "description", "recommended_stock_code",
-           "recommended_description", "rank", "method",
-           "pair_baskets", "support", "confidence", "lift"]
+COLUMNS = [
+    "stock_code",
+    "description",
+    "recommended_stock_code",
+    "recommended_description",
+    "rank",
+    "method",
+    "pair_baskets",
+    "support",
+    "confidence",
+    "lift",
+]
 
 
 def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
@@ -98,31 +107,53 @@ def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
     pairs: Counter = Counter()
     for products in baskets[(sizes >= 2) & (sizes <= c["max_basket_size"])]:
-        pairs.update(combinations(products, 2))   # sorted -> stable key
+        pairs.update(combinations(products, 2))  # sorted -> stable key
     rows = []
     for (a, b), count in pairs.items():
         if count < c["min_support_count"]:
             continue
-        for src, dst in ((a, b), (b, a)):         # a recommendation is directional
+        for src, dst in ((a, b), (b, a)):  # a recommendation is directional
             conf = count / items[src]
-            rows.append({"stock_code": src, "recommended_stock_code": dst,
-                         "pair_baskets": count, "support": count / n,
-                         "confidence": conf, "lift": conf / (items[dst] / n)})
+            rows.append(
+                {
+                    "stock_code": src,
+                    "recommended_stock_code": dst,
+                    "pair_baskets": count,
+                    "support": count / n,
+                    "confidence": conf,
+                    "lift": conf / (items[dst] / n),
+                }
+            )
 
     rules = pd.DataFrame(rows)
-    log.info("Baskets %s | pairs %s | rules %s", f"{n:,}", f"{len(pairs):,}", f"{len(rules):,}")
+    log.info(
+        "Baskets %s | pairs %s | rules %s",
+        f"{n:,}",
+        f"{len(pairs):,}",
+        f"{len(rules):,}",
+    )
     if rules.empty:
         return rules
-    rules = rules[(rules["confidence"] >= c["min_confidence"]) & (rules["lift"] >= c["min_lift"])]
-    top = (rules.sort_values(["stock_code", "lift"], ascending=[True, False])
-                .groupby("stock_code").head(c["top_n"]).copy())
+    rules = rules[
+        (rules["confidence"] >= c["min_confidence"]) & (rules["lift"] >= c["min_lift"])
+    ]
+    top = (
+        rules.sort_values(["stock_code", "lift"], ascending=[True, False])
+        .groupby("stock_code")
+        .head(c["top_n"])
+        .copy()
+    )
     top["rank"] = top.groupby("stock_code").cumcount() + 1
     top["method"] = "co_purchase"
     return top
 
 
-def content_fallback(dim_product: pd.DataFrame, covered: set[str], cfg: dict) -> pd.DataFrame:
-    catalogue = dim_product[dim_product["description"] != "UNKNOWN"].reset_index(drop=True)
+def content_fallback(
+    dim_product: pd.DataFrame, covered: set[str], cfg: dict
+) -> pd.DataFrame:
+    catalogue = dim_product[dim_product["description"] != "UNKNOWN"].reset_index(
+        drop=True
+    )
     cold = catalogue[~catalogue["stock_code"].isin(covered)]
     if cold.empty or len(catalogue) < 5:
         return pd.DataFrame()
@@ -135,16 +166,22 @@ def content_fallback(dim_product: pd.DataFrame, covered: set[str], cfg: dict) ->
     matrix = None
     for min_df in (2, 1):
         try:
-            vec = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), min_df=min_df)
+            vec = TfidfVectorizer(
+                stop_words="english", ngram_range=(1, 2), min_df=min_df
+            )
             matrix = vec.fit_transform(catalogue["description"])
             break
         except ValueError:
             continue
     if matrix is None or matrix.shape[1] == 0:
-        log.warning("Descriptions carry no usable vocabulary - skipping content fallback")
+        log.warning(
+            "Descriptions carry no usable vocabulary - skipping content fallback"
+        )
         return pd.DataFrame()
 
-    nn = NearestNeighbors(n_neighbors=min(top_n + 1, len(catalogue)), metric="cosine").fit(matrix)
+    nn = NearestNeighbors(
+        n_neighbors=min(top_n + 1, len(catalogue)), metric="cosine"
+    ).fit(matrix)
     _, idx = nn.kneighbors(matrix[cold.index.to_numpy()])
 
     rows = []
@@ -164,9 +201,18 @@ def content_fallback(dim_product: pd.DataFrame, covered: set[str], cfg: dict) ->
             # failed recommendation rather than a differently-derived one.
             # Same rule the adoption report states: no data shows as blank,
             # never as zero.
-            rows.append({"stock_code": src, "recommended_stock_code": dst, "rank": rank,
-                         "method": "content_tfidf", "pair_baskets": pd.NA,
-                         "support": np.nan, "confidence": np.nan, "lift": np.nan})
+            rows.append(
+                {
+                    "stock_code": src,
+                    "recommended_stock_code": dst,
+                    "rank": rank,
+                    "method": "content_tfidf",
+                    "pair_baskets": pd.NA,
+                    "support": np.nan,
+                    "confidence": np.nan,
+                    "lift": np.nan,
+                }
+            )
             if rank >= top_n:
                 break
     log.info("Content fallback covered %s cold-start products", f"{len(cold):,}")
@@ -182,15 +228,23 @@ def recommend(tables: dict[str, pd.DataFrame], cfg: dict) -> pd.DataFrame:
     parts = [f for f in (top, cold) if not f.empty]
     recs = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
     if recs.empty:
-        log.warning("No recommendations produced - loosen the thresholds in config.yaml")
+        log.warning(
+            "No recommendations produced - loosen the thresholds in config.yaml"
+        )
         return pd.DataFrame(columns=COLUMNS)
 
     # Attach names so the table can go straight to a merchandiser.
     names = dim_product[["stock_code", "description"]]
-    recs = (recs.merge(names, on="stock_code", how="left")
-                .merge(names.rename(columns={"stock_code": "recommended_stock_code",
-                                             "description": "recommended_description"}),
-                       on="recommended_stock_code", how="left"))
+    recs = recs.merge(names, on="stock_code", how="left").merge(
+        names.rename(
+            columns={
+                "stock_code": "recommended_stock_code",
+                "description": "recommended_description",
+            }
+        ),
+        on="recommended_stock_code",
+        how="left",
+    )
     for col in ("support", "confidence", "lift"):
         recs[col] = recs[col].round(5)
 
@@ -201,14 +255,24 @@ def recommend(tables: dict[str, pd.DataFrame], cfg: dict) -> pd.DataFrame:
     # >=90%, so silence here would be indistinguishable from success.
     uncovered = set(dim_product["stock_code"]) - set(recs["stock_code"])
     if uncovered:
-        blank = set(dim_product.loc[dim_product["description"] == "UNKNOWN", "stock_code"])
+        blank = set(
+            dim_product.loc[dim_product["description"] == "UNKNOWN", "stock_code"]
+        )
         log.warning(
             "%s of %s products have no recommendation by either route "
             "(%s of them also have no usable description)",
-            f"{len(uncovered):,}", f"{len(dim_product):,}",
+            f"{len(uncovered):,}",
+            f"{len(dim_product):,}",
             f"{len(uncovered & blank):,}",
         )
 
-    log.info("Recommendations %s rows | %.1f%% of the catalogue covered",
-             f"{len(recs):,}", 100 * recs["stock_code"].nunique() / len(dim_product))
-    return recs[COLUMNS].sort_values(["method", "stock_code", "rank"]).reset_index(drop=True)
+    log.info(
+        "Recommendations %s rows | %.1f%% of the catalogue covered",
+        f"{len(recs):,}",
+        100 * recs["stock_code"].nunique() / len(dim_product),
+    )
+    return (
+        recs[COLUMNS]
+        .sort_values(["method", "stock_code", "rank"])
+        .reset_index(drop=True)
+    )

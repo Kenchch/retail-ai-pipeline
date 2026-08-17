@@ -70,7 +70,11 @@ def resolve_as_of(events: pd.DataFrame, cfg: dict) -> pd.Timestamp | None:
         # A date carries no time, so pd.Timestamp gives midnight - and "as of
         # 28 June" would then exclude everything that happened on 28 June.
         # Anyone writing a date in config means the end of that day.
-        return ts + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1) if ts == ts.normalize() else ts
+        return (
+            ts + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+            if ts == ts.normalize()
+            else ts
+        )
     return events["event_ts"].max() if len(events) else None
 
 
@@ -97,14 +101,16 @@ def effective_roster(events: pd.DataFrame, cfg: dict) -> dict[str, int]:
     if not len(events):
         return roster
     unlisted = sorted(set(events["team"].dropna()) - set(roster))
-    if unlisted:   # using it but never licensed = the rollout list is stale
+    if unlisted:  # using it but never licensed = the rollout list is stale
         log.warning("Active but not on the roster: %s", ", ".join(unlisted))
         for team in unlisted:
             roster[team] = int(events[events["team"] == team]["user_id"].nunique())
     return roster
 
 
-def weekly_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
+def weekly_metrics(
+    events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = None
+) -> pd.DataFrame:
     """Weekly trend over a CONTINUOUS calendar.
 
     A week nobody used the solution produces no events, so grouping the log by
@@ -117,8 +123,17 @@ def weekly_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None =
     # against a smaller denominator than the headline reach beside it.
     licensed = sum(effective_roster(events, cfg).values())
     if events.empty:
-        return pd.DataFrame(columns=["week_no", "week_start", "active_users",
-                                     "reach_pct", "views", "applies", "action_rate_pct"])
+        return pd.DataFrame(
+            columns=[
+                "week_no",
+                "week_start",
+                "active_users",
+                "reach_pct",
+                "views",
+                "applies",
+                "action_rate_pct",
+            ]
+        )
 
     # Derived here rather than expected from the caller, so this function works
     # on any event frame with a timestamp.
@@ -131,18 +146,24 @@ def weekly_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None =
         applies=("event_type", lambda s: int((s == "apply").sum())),
     )
     calendar = pd.date_range(weekly.index.min(), weekly.index.max(), freq="7D")
-    weekly = weekly.reindex(calendar, fill_value=0).rename_axis("week_start").reset_index()
+    weekly = (
+        weekly.reindex(calendar, fill_value=0).rename_axis("week_start").reset_index()
+    )
 
     weekly.insert(0, "week_no", range(1, len(weekly) + 1))
     weekly["reach_pct"] = (100 * weekly["active_users"] / licensed).round(1)
     # No views means the action rate is UNDEFINED, not zero - there was nothing
     # to act on. A fabricated 0% reads as "people ignored it".
     views = weekly["views"].astype(float)
-    weekly["action_rate_pct"] = (100 * weekly["applies"] / views.where(views > 0)).round(1)
+    weekly["action_rate_pct"] = (
+        100 * weekly["applies"] / views.where(views > 0)
+    ).round(1)
     return weekly
 
 
-def team_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
+def team_metrics(
+    events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = None
+) -> pd.DataFrame:
     """One row per team on the ROSTER, including teams with no events at all -
     a team that never opened the report contributes no rows to the log, so any
     team list derived from the log omits exactly the team worth surfacing."""
@@ -162,23 +183,41 @@ def team_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = N
         allt = events[events["team"] == team] if len(events) else events
         views = int((allt["event_type"] == "view").sum()) if len(allt) else 0
         applies = int((allt["event_type"] == "apply").sum()) if len(allt) else 0
-        active = recent[recent["team"] == team]["user_id"].nunique() if len(recent) else 0
-        acted = allt[allt["event_type"] == "apply"]["user_id"].nunique() if len(allt) else 0
-        fb = allt[allt["event_type"] == "feedback"]["feedback_score"].dropna() if len(allt) \
+        active = (
+            recent[recent["team"] == team]["user_id"].nunique() if len(recent) else 0
+        )
+        acted = (
+            allt[allt["event_type"] == "apply"]["user_id"].nunique() if len(allt) else 0
+        )
+        fb = (
+            allt[allt["event_type"] == "feedback"]["feedback_score"].dropna()
+            if len(allt)
             else pd.Series(dtype=float)
-        rows.append({
-            "team": team, "licensed_users": size, "active_users": active,
-            "reach_pct": round(100 * active / size, 1),
-            "activation_pct": round(100 * acted / size, 1),
-            "views": views, "applies": applies,
-            "action_rate_pct": round(100 * applies / views, 1) if views else None,
-            "csat": round(float(fb.mean()), 2) if len(fb) else None,
-            "csat_responses": len(fb),
-        })
-    return pd.DataFrame(rows).sort_values("reach_pct", ascending=False).reset_index(drop=True)
+        )
+        rows.append(
+            {
+                "team": team,
+                "licensed_users": size,
+                "active_users": active,
+                "reach_pct": round(100 * active / size, 1),
+                "activation_pct": round(100 * acted / size, 1),
+                "views": views,
+                "applies": applies,
+                "action_rate_pct": round(100 * applies / views, 1) if views else None,
+                "csat": round(float(fb.mean()), 2) if len(fb) else None,
+                "csat_responses": len(fb),
+            }
+        )
+    return (
+        pd.DataFrame(rows)
+        .sort_values("reach_pct", ascending=False)
+        .reset_index(drop=True)
+    )
 
 
-def headline_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = None) -> pd.DataFrame:
+def headline_metrics(
+    events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None = None
+) -> pd.DataFrame:
     a = cfg["adoption"]
     # The SAME denominator team_metrics uses. Reading a["licensed_users"] here
     # meant the numerator counted every user in the log while the denominator
@@ -186,8 +225,10 @@ def headline_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None
     licensed = sum(effective_roster(events, cfg).values())
     if len(events):
         end = as_of if as_of is not None else resolve_as_of(events, cfg)
-        recent = events[(events["event_ts"] >= end - pd.Timedelta(weeks=a["active_window_weeks"]))
-                        & (events["event_ts"] <= end)]
+        recent = events[
+            (events["event_ts"] >= end - pd.Timedelta(weeks=a["active_window_weeks"]))
+            & (events["event_ts"] <= end)
+        ]
         views = int((events["event_type"] == "view").sum())
         applies = int((events["event_type"] == "apply").sum())
         fb = events[events["event_type"] == "feedback"]["feedback_score"].dropna()
@@ -201,27 +242,40 @@ def headline_metrics(events: pd.DataFrame, cfg: dict, as_of: pd.Timestamp | None
     rows = [
         ("reach_pct", round(100 * active / licensed, 1), a["target_reach_pct"]),
         ("activation_pct", round(100 * acted / licensed, 1), None),
-        ("action_rate_pct", round(100 * applies / views, 1) if views else None,
-         a["target_action_rate_pct"]),
+        (
+            "action_rate_pct",
+            round(100 * applies / views, 1) if views else None,
+            a["target_action_rate_pct"],
+        ),
         ("csat", round(float(fb.mean()), 2) if len(fb) else None, a["target_csat"]),
     ]
     out = pd.DataFrame(rows, columns=["metric", "value", "target"])
     out["status"] = [
-        "no target" if pd.isna(t) else
-        "no data" if v is None or pd.isna(v) else
-        ("on track" if v >= t else "below target")
+        "no target"
+        if pd.isna(t)
+        else "no data"
+        if v is None or pd.isna(v)
+        else ("on track" if v >= t else "below target")
         for v, t in zip(out["value"], out["target"], strict=True)
     ]
     for r in out.itertuples():
-        log.info("  %-16s %7s  target %-5s  %s", r.metric,
-                 "-" if pd.isna(r.value) else r.value,
-                 "-" if pd.isna(r.target) else r.target, r.status)
+        log.info(
+            "  %-16s %7s  target %-5s  %s",
+            r.metric,
+            "-" if pd.isna(r.value) else r.value,
+            "-" if pd.isna(r.target) else r.target,
+            r.status,
+        )
     return out
 
 
-def write_report(headline: pd.DataFrame, weekly: pd.DataFrame,
-                 teams: pd.DataFrame, cfg: dict,
-                 as_of: pd.Timestamp | None = None) -> None:
+def write_report(
+    headline: pd.DataFrame,
+    weekly: pd.DataFrame,
+    teams: pd.DataFrame,
+    cfg: dict,
+    as_of: pd.Timestamp | None = None,
+) -> None:
     def cell(v):
         return "&ndash;" if v is None or pd.isna(v) else v
 
@@ -231,26 +285,59 @@ def write_report(headline: pd.DataFrame, weekly: pd.DataFrame,
     # last 4 weeks" silently means "the 4 weeks before whatever the newest event
     # happens to be", which is not a date a reader can check against anything.
     stamp = "" if as_of is None else f" &middot; four weeks ending {as_of:%d %b %Y}"
-    source = ("Simulated telemetry from `scripts/get_data.py` - this has not been "
-              "deployed to real users. Schema and metrics are the production ones.")
-    lines = ["# Adoption report", "",
-             f"{int(teams['licensed_users'].sum())} licensed users across "
-             f"{len(teams)} teams{stamp}.", "", f"_{source}_", "",
-             "| Metric | Value | Target | Status |", "|---|---|---|---|"]
-    lines += [f"| {r.metric} | {cell(r.value)} | {cell(r.target)} | {r.status} |"
-              for r in headline.itertuples()]
-    lines += ["", "## By team", "",
-              "| Team | Licensed | Active (4w) | Reach | Activation | Action rate | CSAT | Responses |",
-              "|---|---|---|---|---|---|---|---|"]
-    lines += [f"| {r.team} | {r.licensed_users} | {r.active_users} | {r.reach_pct}% "
-              f"| {r.activation_pct}% | {cell(r.action_rate_pct)}% | {cell(r.csat)} "
-              f"| {r.csat_responses} |" for r in teams.itertuples()]
-    lines += ["", "## Weekly", "", "| Week | Active | Reach | Views | Applies | Action rate |",
-              "|---|---|---|---|---|---|"]
-    lines += [f"| {r.week_no} | {r.active_users} | {r.reach_pct}% | {r.views} "
-              f"| {r.applies} | {cell(r.action_rate_pct)}% |" for r in weekly.itertuples()]
-    lines += ["", "Definitions are in `docs/03_adoption_and_comms.md`. A metric with no data "
-              "shows &ndash;, never 0 - the two mean different things."]
+    source = (
+        "Simulated telemetry from `scripts/get_data.py` - this has not been "
+        "deployed to real users. Schema and metrics are the production ones."
+    )
+    lines = [
+        "# Adoption report",
+        "",
+        (
+            f"{int(teams['licensed_users'].sum())} licensed users across "
+            f"{len(teams)} teams{stamp}."
+        ),
+        "",
+        f"_{source}_",
+        "",
+        "| Metric | Value | Target | Status |",
+        "|---|---|---|---|",
+    ]
+    lines += [
+        f"| {r.metric} | {cell(r.value)} | {cell(r.target)} | {r.status} |"
+        for r in headline.itertuples()
+    ]
+    lines += [
+        "",
+        "## By team",
+        "",
+        "| Team | Licensed | Active (4w) | Reach | Activation | Action rate | CSAT | Responses |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    lines += [
+        f"| {r.team} | {r.licensed_users} | {r.active_users} | {r.reach_pct}% "
+        f"| {r.activation_pct}% | {cell(r.action_rate_pct)}% | {cell(r.csat)} "
+        f"| {r.csat_responses} |"
+        for r in teams.itertuples()
+    ]
+    lines += [
+        "",
+        "## Weekly",
+        "",
+        "| Week | Active | Reach | Views | Applies | Action rate |",
+        "|---|---|---|---|---|---|",
+    ]
+    lines += [
+        f"| {r.week_no} | {r.active_users} | {r.reach_pct}% | {r.views} "
+        f"| {r.applies} | {cell(r.action_rate_pct)}% |"
+        for r in weekly.itertuples()
+    ]
+    lines += [
+        "",
+        (
+            "Definitions are in `docs/03_adoption_and_comms.md`. A metric with no data "
+            "shows &ndash;, never 0 - the two mean different things."
+        ),
+    ]
     (cfg["paths"]["reports"] / "adoption_report.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
@@ -265,4 +352,8 @@ def measure_adoption(cfg: dict) -> dict[str, pd.DataFrame]:
     weekly = weekly_metrics(events, cfg, as_of)
     teams = team_metrics(events, cfg, as_of)
     write_report(headline, weekly, teams, cfg, as_of)
-    return {"adoption_headline": headline, "adoption_weekly": weekly, "adoption_by_team": teams}
+    return {
+        "adoption_headline": headline,
+        "adoption_weekly": weekly,
+        "adoption_by_team": teams,
+    }

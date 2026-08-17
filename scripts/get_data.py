@@ -35,23 +35,42 @@ import pandas as pd
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-URL = ("https://raw.githubusercontent.com/databricks/Spark-The-Definitive-Guide/"
-       "master/data/retail-data/all/online-retail-dataset.csv")
+URL = (
+    "https://raw.githubusercontent.com/databricks/Spark-The-Definitive-Guide/"
+    "master/data/retail-data/all/online-retail-dataset.csv"
+)
 TRANSACTIONS = ROOT / "data" / "raw" / "online_retail.csv"
 EVENTS = ROOT / "data" / "raw" / "usage_events.csv"
 
-SEED, LAUNCH, WEEKS = 20260802, datetime(2026, 4, 6), 12
+
+# LAUNCH is a naive calendar anchor for simulated local timestamps, not a real
+# instant. Making it tz-aware would rewrite every event_ts in the generated CSV
+# and move the input digest with it - a formatting change relocating a
+# provenance record is the exact failure that digest was fixed to stop.
+SEED, LAUNCH, WEEKS = 20260802, datetime(2026, 4, 6), 12  # noqa: DTZ001
 WORKSHOPS = {3, 8}
 # Headcount comes from config.yaml - one source of truth. Only behaviour is here.
 BEHAVIOUR = {
     "Category Management": {"base": 0.55, "dormant": 0.10},
-    "Merchandising":       {"base": 0.48, "dormant": 0.15},
-    "Online Trading":      {"base": 0.50, "dormant": 0.10},
-    "Marketing":           {"base": 0.32, "dormant": 0.35},
-    "Store Ops":           {"base": 0.16, "dormant": 0.55},
+    "Merchandising": {"base": 0.48, "dormant": 0.15},
+    "Online Trading": {"base": 0.50, "dormant": 0.10},
+    "Marketing": {"base": 0.32, "dormant": 0.35},
+    "Store Ops": {"base": 0.16, "dormant": 0.55},
 }
-CURVE = {1: .35, 2: .50, 3: .72, 4: .80, 5: .86, 6: .62,
-         7: .80, 8: 1.0, 9: 1.06, 10: 1.10, 11: 1.08, 12: 1.12}
+CURVE = {
+    1: 0.35,
+    2: 0.50,
+    3: 0.72,
+    4: 0.80,
+    5: 0.86,
+    6: 0.62,
+    7: 0.80,
+    8: 1.0,
+    9: 1.06,
+    10: 1.10,
+    11: 1.08,
+    12: 1.12,
+}
 
 # The mirror serves one fixed revision of the UCI file. Pinning its digest is
 # what turns "the download finished" into "the download is the file the
@@ -96,8 +115,10 @@ def _fetch(url: str, dest: Path) -> None:
     part = dest.with_name(dest.name + ".part")
     part.unlink(missing_ok=True)
     try:
-        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as resp, \
-                part.open("wb") as out:
+        with (
+            urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as resp,
+            part.open("wb") as out,
+        ):
             shutil.copyfileobj(resp, out)
 
         got = part.stat().st_size
@@ -114,9 +135,9 @@ def _fetch(url: str, dest: Path) -> None:
                 "EXPECTED_SHA256/EXPECTED_BYTES deliberately rather than publishing "
                 "from an unrecognised file."
             )
-        os.replace(part, dest)          # atomic: dest is either old or complete
+        os.replace(part, dest)  # atomic: dest is either old or complete
     finally:
-        part.unlink(missing_ok=True)    # never leave a partial for the next run
+        part.unlink(missing_ok=True)  # never leave a partial for the next run
 
 
 def download() -> None:
@@ -128,7 +149,9 @@ def download() -> None:
         if _sha256(TRANSACTIONS) == EXPECTED_SHA256:
             print(f"Already present and verified: {TRANSACTIONS.name}")
             return
-        print(f"{TRANSACTIONS.name} does not match the expected digest - re-downloading")
+        print(
+            f"{TRANSACTIONS.name} does not match the expected digest - re-downloading"
+        )
         TRANSACTIONS.unlink()
     print(f"Downloading -> {TRANSACTIONS}")
     _fetch(URL, TRANSACTIONS)
@@ -140,7 +163,7 @@ def generate_events() -> None:
 
     codes = [f"SKU{i:05d}" for i in range(400)]
     products = ROOT / "data" / "processed" / "dim_product.parquet"
-    if products.exists():   # real stock codes, so usage joins back to the catalogue
+    if products.exists():  # real stock codes, so usage joins back to the catalogue
         top = pd.read_parquet(products, columns=["stock_code", "n_invoices"])
         codes = top.nlargest(400, "n_invoices")["stock_code"].tolist()
 
@@ -148,9 +171,14 @@ def generate_events() -> None:
     for team, headcount in roster.items():
         spec = BEHAVIOUR.get(team, {"base": 0.4, "dormant": 0.2})
         for i in range(headcount):
-            dormant = rng.random() < spec["dormant"]   # real rollouts always have some
-            users.append({"user_id": f"{team[:2].upper()}{i:03d}", "team": team,
-                          "p": 0.0 if dormant else max(0.05, rng.gauss(spec["base"], 0.18))})
+            dormant = rng.random() < spec["dormant"]  # real rollouts always have some
+            users.append(
+                {
+                    "user_id": f"{team[:2].upper()}{i:03d}",
+                    "team": team,
+                    "p": 0.0 if dormant else max(0.05, rng.gauss(spec["base"], 0.18)),
+                }
+            )
 
     rows = []
     for week in range(1, WEEKS + 1):
@@ -158,26 +186,53 @@ def generate_events() -> None:
         for u in users:
             p = min(0.95, u["p"] * CURVE[week])
             if week in WORKSHOPS and rng.random() < 0.35:
-                p = min(0.95, p + 0.25)       # a workshop converts some non-users
+                p = min(0.95, p + 0.25)  # a workshop converts some non-users
             if rng.random() > p:
                 continue
             for _ in range(rng.choice([1, 1, 1, 2, 2, 3])):
-                ts = start + timedelta(days=rng.randint(0, 4), hours=rng.randint(8, 17),
-                                       minutes=rng.randint(0, 59))
+                ts = start + timedelta(
+                    days=rng.randint(0, 4),
+                    hours=rng.randint(8, 17),
+                    minutes=rng.randint(0, 59),
+                )
                 for _ in range(rng.randint(1, 6)):
                     code = rng.choice(codes)
                     rows.append((ts, u["user_id"], u["team"], "view", code, None))
                     if rng.random() < 0.09 + 0.14 * min(u["p"], 1.0) + 0.008 * week:
-                        rows.append((ts + timedelta(minutes=rng.randint(1, 20)),
-                                     u["user_id"], u["team"], "apply", code, None))
+                        rows.append(
+                            (
+                                ts + timedelta(minutes=rng.randint(1, 20)),
+                                u["user_id"],
+                                u["team"],
+                                "apply",
+                                code,
+                                None,
+                            )
+                        )
                 if rng.random() < 0.16:
                     mu = 3.4 if u["team"] == "Store Ops" else 4.3
-                    rows.append((ts + timedelta(minutes=rng.randint(1, 40)),
-                                 u["user_id"], u["team"], "feedback", None,
-                                 int(min(5, max(1, round(rng.gauss(mu, 0.9)))))))
+                    rows.append(
+                        (
+                            ts + timedelta(minutes=rng.randint(1, 40)),
+                            u["user_id"],
+                            u["team"],
+                            "feedback",
+                            None,
+                            int(min(5, max(1, round(rng.gauss(mu, 0.9))))),
+                        )
+                    )
 
-    df = pd.DataFrame(rows, columns=["event_ts", "user_id", "team", "event_type",
-                                     "stock_code", "feedback_score"])
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "event_ts",
+            "user_id",
+            "team",
+            "event_type",
+            "stock_code",
+            "feedback_score",
+        ],
+    )
 
     # kind="stable": 1,395 of these rows share a timestamp with another row, and
     # the default quicksort gives no ordering guarantee among ties. It happens
@@ -200,7 +255,9 @@ def generate_events() -> None:
     # generator produces the same file everywhere" is the property this function
     # claims, and one os.linesep is all it takes to lose it.
     df.to_csv(EVENTS, index=False, lineterminator="\n")
-    print(f"Wrote {len(df):,} usage events for {df['user_id'].nunique()} users -> {EVENTS.name}")
+    print(
+        f"Wrote {len(df):,} usage events for {df['user_id'].nunique()} users -> {EVENTS.name}"
+    )
 
 
 if __name__ == "__main__":

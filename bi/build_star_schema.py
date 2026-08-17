@@ -52,10 +52,29 @@ UNKNOWN_KEY = -1
 # is the split a merchandiser actually asks for; continent alone would not
 # separate the home market from the rest of Europe.
 EU_EEA = {
-    "Austria", "Belgium", "Channel Islands", "Cyprus", "Czech Republic",
-    "Denmark", "EIRE", "European Community", "Finland", "France", "Germany",
-    "Greece", "Iceland", "Italy", "Lithuania", "Malta", "Netherlands",
-    "Norway", "Poland", "Portugal", "Spain", "Sweden", "Switzerland",
+    "Austria",
+    "Belgium",
+    "Channel Islands",
+    "Cyprus",
+    "Czech Republic",
+    "Denmark",
+    "EIRE",
+    "European Community",
+    "Finland",
+    "France",
+    "Germany",
+    "Greece",
+    "Iceland",
+    "Italy",
+    "Lithuania",
+    "Malta",
+    "Netherlands",
+    "Norway",
+    "Poland",
+    "Portugal",
+    "Spain",
+    "Sweden",
+    "Switzerland",
 }
 DOMESTIC = {"United Kingdom"}
 
@@ -72,8 +91,10 @@ PRICE_BANDS = [
 # Dimensions
 # --------------------------------------------------------------------------- #
 
-def build_dim_date(first: pd.Timestamp, last: pd.Timestamp,
-                   traded: set[pd.Timestamp]) -> pd.DataFrame:
+
+def build_dim_date(
+    first: pd.Timestamp, last: pd.Timestamp, traded: set[pd.Timestamp]
+) -> pd.DataFrame:
     """Contiguous whole-year calendar.
 
     Whole years, not the observed range: time intelligence compares a date to
@@ -98,7 +119,7 @@ def build_dim_date(first: pd.Timestamp, last: pd.Timestamp,
     d["YearMonthSort"] = d["Year"] * 100 + d["MonthNo"]
     d["DayOfMonth"] = d["Date"].dt.day
     d["DayName"] = d["Date"].dt.strftime("%a")
-    d["DayOfWeekNo"] = d["Date"].dt.dayofweek + 1          # Mon = 1
+    d["DayOfWeekNo"] = d["Date"].dt.dayofweek + 1  # Mon = 1
     d["DayNameSort"] = d["DayOfWeekNo"]
     d["IsWeekend"] = d["DayOfWeekNo"] >= 6
     d["ISOWeek"] = d["Date"].dt.isocalendar().week.astype(int)
@@ -121,19 +142,36 @@ def build_dim_country(countries: pd.Series) -> pd.DataFrame:
             region = "4. Unspecified"
         else:
             region = "3. Rest of world"
-        rows.append({"CountryKey": i, "Country": name, "Region": region,
-                     "IsDomestic": name in DOMESTIC})
+        rows.append(
+            {
+                "CountryKey": i,
+                "Country": name,
+                "Region": region,
+                "IsDomestic": name in DOMESTIC,
+            }
+        )
     df = pd.DataFrame(rows)
-    return pd.concat([
-        pd.DataFrame([{"CountryKey": UNKNOWN_KEY, "Country": "Unknown",
-                       "Region": "4. Unspecified", "IsDomestic": False}]),
-        df,
-    ], ignore_index=True)
+    return pd.concat(
+        [
+            pd.DataFrame(
+                [
+                    {
+                        "CountryKey": UNKNOWN_KEY,
+                        "Country": "Unknown",
+                        "Region": "4. Unspecified",
+                        "IsDomestic": False,
+                    }
+                ]
+            ),
+            df,
+        ],
+        ignore_index=True,
+    )
 
 
-def build_dim_product(dim_product: pd.DataFrame,
-                      quarantine: pd.DataFrame,
-                      fact: pd.DataFrame) -> pd.DataFrame:
+def build_dim_product(
+    dim_product: pd.DataFrame, quarantine: pd.DataFrame, fact: pd.DataFrame
+) -> pd.DataFrame:
     """Sellable products plus a non-product member for the quarantine fact.
 
     Aggregates (revenue, units_sold, n_invoices) are dropped: they belong to
@@ -144,39 +182,62 @@ def build_dim_product(dim_product: pd.DataFrame,
     p = p.sort_values("stock_code").reset_index(drop=True)
     p.insert(0, "ProductKey", np.arange(1, len(p) + 1))
 
-    bands = pd.cut(p["avg_unit_price"],
-                   bins=[b[0] for b in PRICE_BANDS] + [np.inf],
-                   labels=[b[2] for b in PRICE_BANDS],
-                   right=False, include_lowest=True)
+    bands = pd.cut(
+        p["avg_unit_price"],
+        bins=[b[0] for b in PRICE_BANDS] + [np.inf],
+        labels=[b[2] for b in PRICE_BANDS],
+        right=False,
+        include_lowest=True,
+    )
     p["PriceBand"] = bands.astype(str)
 
-    span = (fact.groupby("stock_code")["date_key"]
-                .agg(FirstSoldDate="min", LastSoldDate="max").reset_index())
+    span = (
+        fact.groupby("stock_code")["date_key"]
+        .agg(FirstSoldDate="min", LastSoldDate="max")
+        .reset_index()
+    )
     p = p.merge(span, on="stock_code", how="left")
 
-    p = p.rename(columns={"stock_code": "StockCode", "description": "Description",
-                          "avg_unit_price": "AvgUnitPrice"})
+    p = p.rename(
+        columns={
+            "stock_code": "StockCode",
+            "description": "Description",
+            "avg_unit_price": "AvgUnitPrice",
+        }
+    )
     p["IsSellable"] = True
 
     # Stock codes that only ever appear in quarantined rows - POST, BANK
     # CHARGES, M. They are real rows and the quality report has to slice by
     # them, but they never became products, so they collapse to one member
     # rather than polluting the catalogue with codes nothing can be sold under.
-    orphan = sorted(set(quarantine["stock_code"].dropna().astype(str))
-                    - set(p["StockCode"]))
-    unknown = pd.DataFrame([{
-        "ProductKey": UNKNOWN_KEY, "StockCode": "(non-product)",
-        "Description": "Non-product stock code (postage, fees, adjustments)",
-        "AvgUnitPrice": np.nan, "PriceBand": "0. Not applicable",
-        "FirstSoldDate": pd.NaT, "LastSoldDate": pd.NaT, "IsSellable": False,
-    }])
-    print(f"  dim_product: {len(p):,} sellable + 1 non-product member "
-          f"(absorbing {len(orphan):,} codes)")
+    orphan = sorted(
+        set(quarantine["stock_code"].dropna().astype(str)) - set(p["StockCode"])
+    )
+    unknown = pd.DataFrame(
+        [
+            {
+                "ProductKey": UNKNOWN_KEY,
+                "StockCode": "(non-product)",
+                "Description": "Non-product stock code (postage, fees, adjustments)",
+                "AvgUnitPrice": np.nan,
+                "PriceBand": "0. Not applicable",
+                "FirstSoldDate": pd.NaT,
+                "LastSoldDate": pd.NaT,
+                "IsSellable": False,
+            }
+        ]
+    )
+    print(
+        f"  dim_product: {len(p):,} sellable + 1 non-product member "
+        f"(absorbing {len(orphan):,} codes)"
+    )
     return pd.concat([unknown, p], ignore_index=True)
 
 
-def build_dim_customer(dim_customer: pd.DataFrame,
-                       country: pd.DataFrame) -> pd.DataFrame:
+def build_dim_customer(
+    dim_customer: pd.DataFrame, country: pd.DataFrame
+) -> pd.DataFrame:
     """Known customers plus an explicit Guest member.
 
     131,418 sales rows have no customer id. Leaving the key null makes Power BI
@@ -197,26 +258,53 @@ def build_dim_customer(dim_customer: pd.DataFrame,
     c["CustomerSegment"] = np.select(
         [q > 0.90, q > 0.70, q > 0.40],
         ["1. Top 10%", "2. Next 20%", "3. Middle 30%"],
-        default="4. Bottom 40%")
+        default="4. Bottom 40%",
+    )
 
-    c = c.merge(country[["CountryKey", "Country"]], left_on="country",
-                right_on="Country", how="left")
+    c = c.merge(
+        country[["CountryKey", "Country"]],
+        left_on="country",
+        right_on="Country",
+        how="left",
+    )
     c["CountryKey"] = c["CountryKey"].fillna(UNKNOWN_KEY).astype(int)
 
-    c = c.rename(columns={"customer_id": "CustomerID",
-                          "first_order": "FirstOrderDate",
-                          "last_order": "LastOrderDate"})
+    c = c.rename(
+        columns={
+            "customer_id": "CustomerID",
+            "first_order": "FirstOrderDate",
+            "last_order": "LastOrderDate",
+        }
+    )
     c["CustomerID"] = c["CustomerID"].astype(str)
     c["IsGuest"] = False
-    c = c[["CustomerKey", "CustomerID", "CountryKey", "Country",
-           "CustomerSegment", "FirstOrderDate", "LastOrderDate", "IsGuest"]]
+    c = c[
+        [
+            "CustomerKey",
+            "CustomerID",
+            "CountryKey",
+            "Country",
+            "CustomerSegment",
+            "FirstOrderDate",
+            "LastOrderDate",
+            "IsGuest",
+        ]
+    ]
 
-    guest = pd.DataFrame([{
-        "CustomerKey": UNKNOWN_KEY, "CustomerID": "(guest)",
-        "CountryKey": UNKNOWN_KEY, "Country": "Unknown",
-        "CustomerSegment": "5. Guest checkout",
-        "FirstOrderDate": pd.NaT, "LastOrderDate": pd.NaT, "IsGuest": True,
-    }])
+    guest = pd.DataFrame(
+        [
+            {
+                "CustomerKey": UNKNOWN_KEY,
+                "CustomerID": "(guest)",
+                "CountryKey": UNKNOWN_KEY,
+                "Country": "Unknown",
+                "CustomerSegment": "5. Guest checkout",
+                "FirstOrderDate": pd.NaT,
+                "LastOrderDate": pd.NaT,
+                "IsGuest": True,
+            }
+        ]
+    )
     return pd.concat([guest, c], ignore_index=True)
 
 
@@ -226,53 +314,80 @@ def build_dim_rule() -> pd.DataFrame:
     Typed out separately it would drift the first time a rule is renamed; read
     from the code it cannot.
     """
-    return pd.DataFrame([{
-        "RuleKey": i,
-        "RuleName": c.name,
-        "RuleLabel": c.name.replace("_", " ").capitalize(),
-        "QualityDimension": c.dimension.capitalize(),
-        "Action": "Quarantine" if c.blocking else "Flag and keep",
-        "Rationale": c.why,
-    } for i, c in enumerate(CHECKS, start=1)])
+    return pd.DataFrame(
+        [
+            {
+                "RuleKey": i,
+                "RuleName": c.name,
+                "RuleLabel": c.name.replace("_", " ").capitalize(),
+                "QualityDimension": c.dimension.capitalize(),
+                "Action": "Quarantine" if c.blocking else "Flag and keep",
+                "Rationale": c.why,
+            }
+            for i, c in enumerate(CHECKS, start=1)
+        ]
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Facts
 # --------------------------------------------------------------------------- #
 
-def build_fact_sales(fact: pd.DataFrame, product: pd.DataFrame,
-                     customer: pd.DataFrame, country: pd.DataFrame) -> pd.DataFrame:
-    f = fact.copy()
-    f["customer_id"] = f["customer_id"].astype("Int64").astype(str).replace("<NA>", "(guest)")
 
-    f = f.merge(product[["ProductKey", "StockCode"]], left_on="stock_code",
-                right_on="StockCode", how="left")
-    f = f.merge(customer[["CustomerKey", "CustomerID"]], left_on="customer_id",
-                right_on="CustomerID", how="left")
-    f = f.merge(country[["CountryKey", "Country"]], left_on="country",
-                right_on="Country", how="left")
+def build_fact_sales(
+    fact: pd.DataFrame,
+    product: pd.DataFrame,
+    customer: pd.DataFrame,
+    country: pd.DataFrame,
+) -> pd.DataFrame:
+    f = fact.copy()
+    f["customer_id"] = (
+        f["customer_id"].astype("Int64").astype(str).replace("<NA>", "(guest)")
+    )
+
+    f = f.merge(
+        product[["ProductKey", "StockCode"]],
+        left_on="stock_code",
+        right_on="StockCode",
+        how="left",
+    )
+    f = f.merge(
+        customer[["CustomerKey", "CustomerID"]],
+        left_on="customer_id",
+        right_on="CustomerID",
+        how="left",
+    )
+    f = f.merge(
+        country[["CountryKey", "Country"]],
+        left_on="country",
+        right_on="Country",
+        how="left",
+    )
 
     for col in ("ProductKey", "CustomerKey", "CountryKey"):
         f[col] = f[col].fillna(UNKNOWN_KEY).astype(int)
 
-    out = pd.DataFrame({
-        # Degenerate dimension: invoice number has no attributes of its own, so
-        # it lives on the fact rather than in a one-column dimension table.
-        "InvoiceNo": f["invoice_no"].astype(str),
-        "Date": f["date_key"].dt.normalize(),
-        "ProductKey": f["ProductKey"],
-        "CustomerKey": f["CustomerKey"],
-        "CountryKey": f["CountryKey"],
-        "Quantity": f["quantity"].astype(int),
-        "UnitPrice": f["unit_price"].round(4),
-        "Revenue": f["revenue"].round(4),
-    })
+    out = pd.DataFrame(
+        {
+            # Degenerate dimension: invoice number has no attributes of its own, so
+            # it lives on the fact rather than in a one-column dimension table.
+            "InvoiceNo": f["invoice_no"].astype(str),
+            "Date": f["date_key"].dt.normalize(),
+            "ProductKey": f["ProductKey"],
+            "CustomerKey": f["CustomerKey"],
+            "CountryKey": f["CountryKey"],
+            "Quantity": f["quantity"].astype(int),
+            "UnitPrice": f["unit_price"].round(4),
+            "Revenue": f["revenue"].round(4),
+        }
+    )
     assert (out[["ProductKey", "CustomerKey", "CountryKey"]] != 0).all().all()
     return out
 
 
-def build_fact_quarantine(q: pd.DataFrame, product: pd.DataFrame,
-                          country: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_fact_quarantine(
+    q: pd.DataFrame, product: pd.DataFrame, country: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The rejected rows, as a fact, plus the bridge to the rules they broke.
 
     A row can break several rules at once, so rule is a many-to-many
@@ -284,31 +399,44 @@ def build_fact_quarantine(q: pd.DataFrame, product: pd.DataFrame,
     q = q.reset_index(drop=True).copy()
     q.insert(0, "QuarantineKey", np.arange(1, len(q) + 1))
 
-    q = q.merge(product[["ProductKey", "StockCode"]], left_on="stock_code",
-                right_on="StockCode", how="left")
-    q = q.merge(country[["CountryKey", "Country"]], left_on="country",
-                right_on="Country", how="left")
+    q = q.merge(
+        product[["ProductKey", "StockCode"]],
+        left_on="stock_code",
+        right_on="StockCode",
+        how="left",
+    )
+    q = q.merge(
+        country[["CountryKey", "Country"]],
+        left_on="country",
+        right_on="Country",
+        how="left",
+    )
     q["ProductKey"] = q["ProductKey"].fillna(UNKNOWN_KEY).astype(int)
     q["CountryKey"] = q["CountryKey"].fillna(UNKNOWN_KEY).astype(int)
 
-    fact = pd.DataFrame({
-        "QuarantineKey": q["QuarantineKey"],
-        "InvoiceNo": q["invoice_no"].astype(str),
-        "Date": q["invoice_ts"].dt.normalize(),
-        "ProductKey": q["ProductKey"],
-        "CountryKey": q["CountryKey"],
-        "Quantity": q["quantity"].astype(int),
-        "UnitPrice": q["unit_price"].round(4),
-        # Not "Revenue": these rows were rejected, so this is the money that
-        # would have been booked had the rules not fired. Naming it Revenue
-        # invites someone to add it to the sales measure.
-        "RejectedValue": (q["quantity"] * q["unit_price"]).round(4),
-    })
+    fact = pd.DataFrame(
+        {
+            "QuarantineKey": q["QuarantineKey"],
+            "InvoiceNo": q["invoice_no"].astype(str),
+            "Date": q["invoice_ts"].dt.normalize(),
+            "ProductKey": q["ProductKey"],
+            "CountryKey": q["CountryKey"],
+            "Quantity": q["quantity"].astype(int),
+            "UnitPrice": q["unit_price"].round(4),
+            # Not "Revenue": these rows were rejected, so this is the money that
+            # would have been booked had the rules not fired. Naming it Revenue
+            # invites someone to add it to the sales measure.
+            "RejectedValue": (q["quantity"] * q["unit_price"]).round(4),
+        }
+    )
 
     rules = build_dim_rule().set_index("RuleName")["RuleKey"].to_dict()
-    pairs = [(k, rules[name])
-             for k, reasons in zip(q["QuarantineKey"], q["reasons"])
-             for name in str(reasons).split(",") if name in rules]
+    pairs = [
+        (k, rules[name])
+        for k, reasons in zip(q["QuarantineKey"], q["reasons"])
+        for name in str(reasons).split(",")
+        if name in rules
+    ]
     bridge = pd.DataFrame(pairs, columns=["QuarantineKey", "RuleKey"])
     return fact, bridge
 
@@ -338,14 +466,20 @@ def build_security(country: pd.DataFrame) -> pd.DataFrame:
         ("groupbi@example.com", "*"),
     ]
     lookup = country.set_index("Country")["CountryKey"].to_dict()
-    return pd.DataFrame([
-        {"UserEmail": u, "Country": c,
-         "CountryKey": lookup.get(c, UNKNOWN_KEY) if c != "*" else 0}
-        for u, c in rows
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "UserEmail": u,
+                "Country": c,
+                "CountryKey": lookup.get(c, UNKNOWN_KEY) if c != "*" else 0,
+            }
+            for u, c in rows
+        ]
+    )
 
 
 # --------------------------------------------------------------------------- #
+
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
@@ -384,10 +518,18 @@ def main() -> None:
     print("\nReferential integrity")
     checks = [
         ("fact_sales.ProductKey", fact_sales["ProductKey"], dim_product["ProductKey"]),
-        ("fact_sales.CustomerKey", fact_sales["CustomerKey"], dim_customer["CustomerKey"]),
+        (
+            "fact_sales.CustomerKey",
+            fact_sales["CustomerKey"],
+            dim_customer["CustomerKey"],
+        ),
         ("fact_sales.CountryKey", fact_sales["CountryKey"], dim_country["CountryKey"]),
         ("fact_sales.Date", fact_sales["Date"], dim_date["Date"]),
-        ("fact_quarantine.ProductKey", fact_quar["ProductKey"], dim_product["ProductKey"]),
+        (
+            "fact_quarantine.ProductKey",
+            fact_quar["ProductKey"],
+            dim_product["ProductKey"],
+        ),
         ("fact_quarantine.Date", fact_quar["Date"], dim_date["Date"]),
         ("bridge.RuleKey", bridge["RuleKey"], dim_rule["RuleKey"]),
         ("bridge.QuarantineKey", bridge["QuarantineKey"], fact_quar["QuarantineKey"]),
@@ -396,29 +538,40 @@ def main() -> None:
         orphans = int((~child.isin(set(parent))).sum())
         print(f"  {'OK ' if orphans == 0 else 'FAIL'} {name:32s} {orphans} orphans")
         if orphans:
-            raise SystemExit(f"{name} has {orphans} orphan keys - fix before publishing")
+            raise SystemExit(
+                f"{name} has {orphans} orphan keys - fix before publishing"
+            )
 
-    for name, df, key in (("dim_product", dim_product, "ProductKey"),
-                          ("dim_customer", dim_customer, "CustomerKey"),
-                          ("dim_country", dim_country, "CountryKey"),
-                          ("dim_date", dim_date, "Date"),
-                          ("dim_quality_rule", dim_rule, "RuleKey")):
+    for name, df, key in (
+        ("dim_product", dim_product, "ProductKey"),
+        ("dim_customer", dim_customer, "CustomerKey"),
+        ("dim_country", dim_country, "CountryKey"),
+        ("dim_date", dim_date, "Date"),
+        ("dim_quality_rule", dim_rule, "RuleKey"),
+    ):
         assert df[key].is_unique, f"{name}.{key} is not unique"
-    assert dim_date["Date"].diff().dropna().eq(pd.Timedelta(days=1)).all(), \
+    assert dim_date["Date"].diff().dropna().eq(pd.Timedelta(days=1)).all(), (
         "dim_date is not contiguous - Power BI will refuse to mark it as a date table"
+    )
 
     print("\nWriting", OUT)
     for name, df in tables.items():
         path = OUT / f"{name}.csv"
         df.to_csv(path, index=False, date_format="%Y-%m-%d")
-        print(f"  {name:24s} {len(df):>9,} rows x {df.shape[1]:>2} cols "
-              f"({path.stat().st_size / 1024:,.0f} KB)")
+        print(
+            f"  {name:24s} {len(df):>9,} rows x {df.shape[1]:>2} cols "
+            f"({path.stat().st_size / 1024:,.0f} KB)"
+        )
 
     total = fact_sales["Revenue"].sum()
-    print(f"\nfact_sales reconciles to GBP {total:,.2f} over "
-          f"{fact_sales['InvoiceNo'].nunique():,} invoices")
-    print(f"guest rows: {(fact_sales['CustomerKey'] == UNKNOWN_KEY).sum():,} "
-          f"({(fact_sales['CustomerKey'] == UNKNOWN_KEY).mean():.1%})")
+    print(
+        f"\nfact_sales reconciles to GBP {total:,.2f} over "
+        f"{fact_sales['InvoiceNo'].nunique():,} invoices"
+    )
+    print(
+        f"guest rows: {(fact_sales['CustomerKey'] == UNKNOWN_KEY).sum():,} "
+        f"({(fact_sales['CustomerKey'] == UNKNOWN_KEY).mean():.1%})"
+    )
 
 
 if __name__ == "__main__":
