@@ -12,6 +12,7 @@ import os
 import pandas as pd
 import pytest
 
+from retail_pipeline import adoption as adoption_mod
 from retail_pipeline.adoption import headline_metrics, team_metrics, weekly_metrics
 from retail_pipeline.pipeline import (
     CHECKS, _input_fingerprint, check_quality, extract, load_config, transform,
@@ -26,6 +27,10 @@ HEADER = ("InvoiceNo,StockCode,Description,Quantity,InvoiceDate,"
 def cfg():
     c = load_config()
     c["quality"]["max_quarantine_rate"] = 1.0   # the sample below is mostly broken
+    # The synthetic event frames here are dated around the launch, not around
+    # config's pinned analysis date, so they measure back from their own newest
+    # event. test_analysis_as_of_is_honoured_and_shared covers the pinned path.
+    c["adoption"].pop("analysis_as_of", None)
     return c
 
 
@@ -265,6 +270,61 @@ def test_reach_divides_by_the_roster_not_by_who_showed_up(events, cfg):
     t = team_metrics(events, cfg).set_index("team")
     assert t.loc["Category Management", "reach_pct"] == 100.0
     assert t.loc["Merchandising", "reach_pct"] == 25.0      # 1 active of 4 licensed
+
+
+def test_analysis_as_of_is_honoured_and_shared(events, cfg):
+    """Every window measures back from one date, and that date can be pinned.
+
+    Defaulting to the newest event is right for a fixed extract and wrong on a
+    live feed: the window slides with the data, so a telemetry feed that stopped
+    a month ago still reports full reach. Pinning it also stops the three tables
+    disagreeing about which day "the last four weeks" ends on.
+    """
+    cfg["adoption"]["roster"] = {"Category Management": 1, "Merchandising": 1}
+    cfg["adoption"]["licensed_users"] = 2
+
+    # Events are dated 2026-04-06/07. An as_of far past them puts everything
+    # outside the four-week window, so reach must be 0 rather than following
+    # the data forward.
+    cfg["adoption"]["analysis_as_of"] = "2026-08-01"
+    as_of = adoption_mod.resolve_as_of(events, cfg)
+    # A bare date means the END of that day, or "as of 1 August" would drop
+    # everything that happened on 1 August.
+    assert as_of == pd.Timestamp("2026-08-01 23:59:59.999999999")
+    assert headline_metrics(events, cfg, as_of).set_index("metric").loc["reach_pct", "value"] == 0.0
+    assert team_metrics(events, cfg, as_of)["active_users"].sum() == 0
+
+    # Pinned to the launch week, the same events are inside it for both tables -
+    # including U2's 09:00 event on the as_of date itself.
+    cfg["adoption"]["analysis_as_of"] = "2026-04-07"
+    as_of = adoption_mod.resolve_as_of(events, cfg)
+    h = headline_metrics(events, cfg, as_of).set_index("metric").loc["reach_pct", "value"]
+    t = team_metrics(events, cfg, as_of)
+    assert h == 100.0 and t["active_users"].sum() == 2
+
+    # Unset, it falls back to the newest event rather than to today.
+    cfg["adoption"].pop("analysis_as_of")
+    assert adoption_mod.resolve_as_of(events, cfg) == events["event_ts"].max()
+
+
+def test_csat_outside_the_scale_and_blank_teams_are_rejected(cfg, tmp_path):
+    """CSAT is a mean, so one out-of-range score moves the headline without ever
+    looking wrong; an event with no team counts in the totals and in no team's
+    row, so the parts stop summing to the whole."""
+    header = "event_ts,user_id,team,event_type,stock_code,feedback_score\n"
+    good = "2026-04-06 10:00:00,U1,Merchandising,view,S1,\n"
+
+    p = tmp_path / "bad_score.csv"
+    p.write_text(header + good + "2026-04-06 10:05:00,U1,Merchandising,feedback,,9\n")
+    cfg["paths"] = dict(cfg["paths"], usage_events=p)
+    with pytest.raises(ValueError, match="outside 1-5"):
+        adoption_mod.load_events(cfg)
+
+    p2 = tmp_path / "blank_team.csv"
+    p2.write_text(header + good + "2026-04-06 10:05:00,U2,,view,S1,\n")
+    cfg["paths"] = dict(cfg["paths"], usage_events=p2)
+    with pytest.raises(ValueError, match="no team"):
+        adoption_mod.load_events(cfg)
 
 
 def test_a_team_with_zero_adoption_shows_zero_rather_than_vanishing(events, cfg):
