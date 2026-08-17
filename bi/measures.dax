@@ -239,7 +239,22 @@ CALCULATE ( [Revenue], dim_customer[IsGuest] = FALSE )
 // Written against the bridge, not the fact, so it responds to a rule filter
 // without needing a bidirectional relationship into the fact table.
 Rejected Rows =
-DISTINCTCOUNT ( bridge_quarantine_rule[QuarantineKey] )
+// A blocking rule that rejected nothing must read 0, not blank.
+//
+// DISTINCTCOUNT returns blank over an empty filter, so `Missing invoice key` -
+// a Quarantine rule that fired on zero rows in this extract - rendered as an
+// empty cell, which in this model means "not measured". It WAS measured and
+// the answer was none, and for a blocking rule those two readings are opposite:
+// one is a blind spot, the other is clean data.
+//
+// Flag-and-keep rules stay blank on purpose. Rejection does not apply to them,
+// so there is genuinely no number - which is the same convention the adoption
+// report states, no data shows as a dash and never as 0.
+VAR Rejected = DISTINCTCOUNT ( bridge_quarantine_rule[QuarantineKey] )
+VAR IsBlocking =
+    SELECTEDVALUE ( dim_quality_rule[Action] ) = "Quarantine"
+RETURN
+    IF ( IsBlocking, Rejected + 0, Rejected )
 
 // Format: #,##0 ; expected grand total 30,739
 Rule Violations =
