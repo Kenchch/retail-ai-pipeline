@@ -4,7 +4,7 @@
   "quarantine_rate_pct": 3.57,
   "rows_loaded": 522566,
   "products": 3803,
-  "recommendations": 17333,
+  "recommendations": 17083,
   "catalogue_coverage_pct": 100.0,
   "adoption": {
     "reach_pct": 74.2,
@@ -29,5 +29,5 @@
       ]
     }
   },
-  "runtime_seconds": 12.4
+  "runtime_seconds": 13.4
 }

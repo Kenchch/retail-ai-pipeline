@@ -9,7 +9,7 @@
 
 For any product, this shows the products most often bought in the same basket,
 ranked by how much stronger that pairing is than chance. It is built from
-522,566 real transaction lines across 16,782 baskets and refreshes overnight.
+522,566 real transaction lines across 19,773 baskets and refreshes overnight.
 
 ## What it is not
 
@@ -25,17 +25,21 @@ right candidates.
 
 | Product | Recommended | Baskets | Confidence | Lift |
 |---|---|---|---|---|
-| CHILDS GARDEN SPADE PINK | CHILDS GARDEN SPADE BLUE | 40 | 0.85 | 234 |
+| CHILDS GARDEN SPADE PINK | CHILDS GARDEN SPADE BLUE | 40 | 0.48 | 95 |
 
 **Baskets — 40.** How many baskets contained both. This is your sample size. A
 lift of 300 on 8 baskets is noise; the same lift on 200 is a finding. **Read
 this first, every time.**
 
-**Confidence — 0.85.** Of baskets with the pink spade, 85% also had the blue.
+**Confidence — 0.48.** Of baskets with the pink spade, 48% also had the blue.
 Note this is directional: the same pair the other way round (blue → pink) is
-0.66, because blue sells more often on its own.
+0.40, because blue sells more often on its own.
 
-**Lift — 234.** The pairing is 234× more likely than if the two were unrelated.
+Baskets holding only the pink spade count in that denominator. They are the
+cases where the recommendation would have been wrong, so leaving them out would
+be marking your own homework.
+
+**Lift — 95.** The pairing is 95× more likely than if the two were unrelated.
 This is the ranking column.
 
 ### How to read lift

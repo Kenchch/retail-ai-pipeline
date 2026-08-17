@@ -40,7 +40,7 @@ the model is tied to a location. Inside the repo is where it needs to be for
 
 > **Do not run the Python build.** The CSVs in `model/` are already generated and
 > still current: the repo's own `reports/run_metrics.json` reports 541,909 rows
-> read · 19,343 quarantined (3.57%) · 522,566 loaded · 3,803 products · 17,333
+> read · 19,343 quarantined (3.57%) · 522,566 loaded · 3,803 products · 17,083
 > recommendations, and every one of those matches the CSVs shipped here. The
 > pipeline has had commits since these were built — the most recent hardens the
 > SQLite load path — but none of them change the published numbers or the shape

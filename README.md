@@ -22,7 +22,7 @@ Source: UCI **Online Retail** — a UK online giftware retailer, Dec 2010 – De
 | Rows read | 541,909 line items across 25,900 invoices |
 | Quarantined by data-quality rules | **19,343 (3.57%)** |
 | Loaded | 522,566 line items · 3,803 products · 4,334 customers · 374 days (305 traded) |
-| Recommendations | 17,333 rows covering the full catalogue |
+| Recommendations | 17,083 rows covering the full catalogue |
 | Adoption | 62 licensed users, 5 teams, 12 weeks |
 | Runtime | 12.4 s — `runtime_seconds` in `reports/run_metrics.json` |
 
@@ -30,8 +30,8 @@ The strongest associations are ones a merchandiser would expect — the cheapest
 sanity check there is:
 
 ```
-LANDMARK FRAME COVENT GARDEN  ->  LANDMARK FRAME OXFORD STREET   lift 322.7   30 baskets
-CHILDS GARDEN SPADE BLUE      ->  CHILDS GARDEN SPADE PINK       lift 234.1   40 baskets
+LANDMARK FRAME COVENT GARDEN  ->  LANDMARK FRAME OXFORD STREET   lift 196.4   30 baskets
+CHILDS GARDEN SPADE BLUE      ->  CHILDS GARDEN SPADE PINK       lift  95.1   40 baskets
 ```
 
 Outputs: [`reports/data_quality_report.md`](reports/data_quality_report.md) ·
@@ -81,6 +81,24 @@ the best sellers the recommendation for everything. TF-IDF over product
 description text (unstructured) covers the long tail that never reaches the
 support threshold. Every row carries a `method` column so the two are never
 conflated.
+
+The population for support and confidence is **every** basket, including ones
+holding a single item. A basket where A was bought alone is evidence against
+"A → B", so dropping it inflates the rule. Three baskets, worked by hand:
+
+```
+{A}   {A, B}   {A, B, C}          all baskets = 3;  A in 3, B in 2, C in 1
+
+support(A,B)    = 2/3 = 0.67
+confidence(A→B) = 2/3 = 0.67      not 2/2 — the {A} basket stays in
+lift(A,B)       = 0.67 / (2/3) = 1.0
+```
+
+`max_basket_size` filters pair *generation* only, for the same reason: a
+1,107-item wholesale order would contribute 612k pairs of things that shared a
+pallet, but the products in it were still sold. Both figures are therefore
+conservative rather than inflated. `test_single_item_baskets_count_in_the_denominator`
+pins the arithmetic above.
 
 **Adoption.** Reach, activation, action rate and CSAT, weekly and by team.
 Activation is the one that matters — a view changes nothing. A metric with no
