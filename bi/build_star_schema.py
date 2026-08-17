@@ -376,7 +376,9 @@ def build_fact_sales(
             "ProductKey": f["ProductKey"],
             "CustomerKey": f["CustomerKey"],
             "CountryKey": f["CountryKey"],
-            "Quantity": f["quantity"].astype(int),
+            # Int64 for symmetry with fact_quarantine; clean rows never hold
+            # a null quantity, since that is a blocking rule.
+            "Quantity": f["quantity"].astype("Int64"),
             "UnitPrice": f["unit_price"].round(4),
             "Revenue": f["revenue"].round(4),
         }
@@ -421,7 +423,11 @@ def build_fact_quarantine(
             "Date": q["invoice_ts"].dt.normalize(),
             "ProductKey": q["ProductKey"],
             "CountryKey": q["CountryKey"],
-            "Quantity": q["quantity"].astype(int),
+            # Int64, not int: a quarantined row can carry a null quantity - that is
+            # exactly what `non_positive_quantity` fires on - and .astype(int)
+            # raises IntCastingNaNError on it. This extract happens to have none,
+            # so the crash is latent rather than absent.
+            "Quantity": q["quantity"].astype("Int64"),
             "UnitPrice": q["unit_price"].round(4),
             # Not "Revenue": these rows were rejected, so this is the money that
             # would have been booked had the rules not fired. Naming it Revenue
@@ -530,7 +536,11 @@ def main() -> None:
             fact_quar["ProductKey"],
             dim_product["ProductKey"],
         ),
-        ("fact_quarantine.Date", fact_quar["Date"], dim_date["Date"]),
+        # Nulls excluded, not counted as orphans: a row rejected by
+        # missing_invoice_key has no timestamp, because the timestamp is what
+        # was wrong with it. Same rule the sibling project states for
+        # quarantine.view_date - "no data" is not a broken key.
+        ("fact_quarantine.Date", fact_quar["Date"].dropna(), dim_date["Date"]),
         ("bridge.RuleKey", bridge["RuleKey"], dim_rule["RuleKey"]),
         ("bridge.QuarantineKey", bridge["QuarantineKey"], fact_quar["QuarantineKey"]),
     ]
