@@ -511,6 +511,17 @@ def _input_fingerprint(cfg: dict) -> dict:
     return out
 
 
+# Tables earlier versions of this pipeline published and no longer do. The
+# manifest-based retirement below only reaches tables recorded in a previous
+# run, so on a warehouse built before the manifest existed these would survive
+# every upgrade - which is exactly the state that prompted it: dq_results and
+# adoption_top_products sat there for weeks, answering queries with frozen rows.
+#
+# An explicit allowlist, not "drop anything unrecognised". A table someone else
+# put in this database is not ours to remove, and a one-time migration that
+# guesses is worse than one that leaves something behind.
+LEGACY_RETIRED_TABLES = ("dq_results", "adoption_top_products")
+
 _INDEXES = (
     "CREATE INDEX IF NOT EXISTS ix_fact_stock ON fact_sales(stock_code)",
     "CREATE INDEX IF NOT EXISTS ix_fact_date ON fact_sales(date_key)",
@@ -609,11 +620,26 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
                 #    Scoped to a recorded manifest rather than "everything not
                 #    in `tables`", so a table someone else put in this database
                 #    is never dropped by us.
+                had_manifest = conn.execute(
+                    "SELECT count(*) FROM sqlite_master "
+                    "WHERE type='table' AND name='_published'"
+                ).fetchone()[0]
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS _published (name TEXT PRIMARY KEY)"
                 )
                 previous = {r[0] for r in conn.execute("SELECT name FROM _published")}
-                retired = sorted(previous - set(tables))
+                if not had_manifest:
+                    # First run against a warehouse that predates the manifest.
+                    # Seed it with the legacy names so they go out through the
+                    # normal retirement path below rather than a separate one.
+                    previous |= set(LEGACY_RETIRED_TABLES)
+                present = {
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                retired = sorted((previous - set(tables)) & present)
                 for gone in retired:
                     conn.execute(f'DROP TABLE IF EXISTS "{gone}"')
                     log.info("Retired %s - no longer published", gone)
