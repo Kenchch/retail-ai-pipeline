@@ -12,7 +12,7 @@ measurement wired into the pipeline itself.
 pip install -r requirements.txt
 python scripts/get_data.py           # ~45 MB of transactions + usage telemetry
 python -m retail_pipeline.pipeline   # ~12 s end to end
-pytest -q                            # 22 tests
+pytest -q                            # 26 tests
 ```
 
 ## Results from a full run
@@ -142,7 +142,7 @@ recommendation. That is not modesty; it is the only way the rest gets believed.
 
 ## Tests
 
-22 tests, concentrated on the failures that are *silent*: a quality rule that
+26 tests, concentrated on the failures that are *silent*: a quality rule that
 stops firing, a team that drops out of the adoption report, a week with no
 activity that closes the gap and shifts every later week's label, a metric with
 no data reported as a zero. Nothing crashes when those regress — bad rows just

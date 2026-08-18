@@ -789,3 +789,49 @@ def test_a_table_that_stops_being_published_is_retired(cfg, tmp_path):
         }
     assert "keep" in tables and "retire_me" not in tables
     assert not (tmp_path / "retire_me.parquet").exists(), "Parquet outlived its table"
+
+
+def test_a_warehouse_predating_the_manifest_still_retires_its_legacy_tables(
+    cfg, tmp_path
+):
+    """Manifest-based retirement only reaches tables a previous run recorded.
+
+    A warehouse built before the manifest existed has none, so dq_results and
+    adoption_top_products survived every upgrade - which is the state that
+    prompted the manifest in the first place. Verified against a database with
+    the legacy tables and no _published: both were still there after a load.
+
+    The migration is an explicit allowlist. A table someone else put in this
+    database is not ours to drop, so an unknown one must survive.
+    """
+    import sqlite3
+
+    from retail_pipeline import pipeline as P
+
+    cfg["paths"] = dict(cfg["paths"], processed=tmp_path, warehouse=tmp_path / "w.db")
+    with sqlite3.connect(tmp_path / "w.db") as conn:
+        for name in (*P.LEGACY_RETIRED_TABLES, "someone_elses_table"):
+            conn.execute(f'CREATE TABLE "{name}" (a INTEGER)')
+            conn.execute(f'INSERT INTO "{name}" VALUES (1)')
+        conn.commit()
+
+    P.load(
+        {
+            "fact_sales": pd.DataFrame(
+                {"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["2011-01-01"]}
+            )
+        },
+        cfg,
+    )
+
+    with sqlite3.connect(tmp_path / "w.db") as conn:
+        tables = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    for gone in P.LEGACY_RETIRED_TABLES:
+        assert gone not in tables, f"{gone} survived the migration"
+    assert "someone_elses_table" in tables, (
+        "the migration dropped a table it does not own"
+    )
+    assert "fact_sales" in tables
