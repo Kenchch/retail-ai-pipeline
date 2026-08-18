@@ -541,6 +541,7 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
     cfg["paths"]["warehouse"].parent.mkdir(parents=True, exist_ok=True)
 
     # 1. Parquet to sidecars - written now, published only after SQLite commits.
+    retired: list[str] = []
     staged: list[tuple[Path, Path]] = []
     for name, df in tables.items():
         tmp = out / f"{name}.parquet.tmp"
@@ -575,31 +576,81 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
                 for name in tables:
                     conn.execute(f'DROP TABLE IF EXISTS "{name}"')
                     conn.execute(f'ALTER TABLE "{name}__new" RENAME TO "{name}"')
+
+                # 4. Indexes go INSIDE the transaction, with the swap they
+                #    belong to. Built after the COMMIT, a failure here left the
+                #    warehouse holding tonight's tables while the `except`
+                #    below deleted the staged Parquet, so SQLite was the new run
+                #    and Parquet was entirely the old one - and load() raised,
+                #    so the caller believed nothing had been published.
+                #    Reproduced by pointing an index at a column that does not
+                #    exist: sqlite=7 rows, parquet=522,566.
+                #
+                #    Indexes are dropped along with the table they were on, so
+                #    they are rebuilt on every swap rather than only first load.
+                for stmt in _INDEXES:
+                    try:
+                        conn.execute(stmt)
+                    except sqlite3.OperationalError as exc:
+                        # Only "the table isn't here yet" is expected - the
+                        # adoption branch legitimately runs before fact_sales
+                        # exists. A lock or disk error is not, and swallowing it
+                        # would hide a failed write behind a successful run.
+                        if "no such table" not in str(exc):
+                            raise
+                # 5. Retire what this pipeline published before and is not
+                #    publishing now. Without it the warehouse accumulated tables
+                #    no code writes any more - dq_results and
+                #    adoption_top_products sat there for weeks, still returning
+                #    rows to anyone who queried them, frozen at whatever the
+                #    last version that wrote them produced. A stale table that
+                #    answers is worse than a missing one that errors.
+                #
+                #    Scoped to a recorded manifest rather than "everything not
+                #    in `tables`", so a table someone else put in this database
+                #    is never dropped by us.
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS _published (name TEXT PRIMARY KEY)"
+                )
+                previous = {r[0] for r in conn.execute("SELECT name FROM _published")}
+                retired = sorted(previous - set(tables))
+                for gone in retired:
+                    conn.execute(f'DROP TABLE IF EXISTS "{gone}"')
+                    log.info("Retired %s - no longer published", gone)
+                conn.execute("DELETE FROM _published")
+                conn.executemany(
+                    "INSERT INTO _published(name) VALUES (?)",
+                    [(n,) for n in sorted(tables)],
+                )
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
-
-            # 4. Indexes are dropped with the table they belonged to, so they
-            #    are rebuilt after every swap rather than only on first load.
-            for stmt in _INDEXES:
-                try:
-                    conn.execute(stmt)
-                except sqlite3.OperationalError as exc:
-                    # Only "the table isn't here yet" is expected - the adoption
-                    # branch legitimately runs before fact_sales exists. A lock
-                    # or disk error is not, and swallowing it here would hide a
-                    # failed write behind a successful-looking run.
-                    if "no such table" not in str(exc):
-                        raise
     except BaseException:
         for tmp, _ in staged:  # publish nothing on the way out
             tmp.unlink(missing_ok=True)
+        # pandas commits each `<name>__new` before the swap transaction opens,
+        # so a rollback leaves them in the database - a partial run's rows,
+        # visible to anything that lists tables. Observed after a failed load:
+        # fact_sales__new sitting alongside the real table.
+        try:
+            with closing(
+                sqlite3.connect(cfg["paths"]["warehouse"], timeout=60.0)
+            ) as c2:
+                for name in tables:
+                    c2.execute(f'DROP TABLE IF EXISTS "{name}__new"')
+                c2.commit()
+        except sqlite3.Error:
+            pass  # the original failure is the one worth raising
         raise
 
-    # 5. SQLite is committed; publish Parquet.
+    # 6. SQLite is committed; publish Parquet, and remove the Parquet of any
+    #    table retired above. Both layers retire together or the analytics
+    #    directory keeps serving a file the warehouse no longer has.
     for tmp, final in staged:
         os.replace(tmp, final)
+    for gone in retired:
+        (out / f"{gone}.parquet").unlink(missing_ok=True)
     log.info("Loaded %s tables to Parquet and SQLite", len(tables))
 
 

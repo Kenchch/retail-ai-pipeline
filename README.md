@@ -64,8 +64,18 @@ extract → data quality → star schema → load → recommend → adoption
 Three modules, scheduled as nine Airflow tasks
 ([`dags/`](dags/retail_pipeline_dag.py)) so a failure names the stage that broke.
 Every stage computes into per-run staging; a single `publish` task is the only
-thing that writes to the warehouse, so it holds one run's output or the previous
-run's and never a mixture of the two.
+thing that writes to the warehouse.
+
+**The guarantee, stated precisely.** SQLite is swapped in one transaction —
+tables built as `<name>__new`, then dropped, renamed and indexed inside a single
+`BEGIN IMMEDIATE`, so a failure anywhere in that leaves the whole database on
+the previous run. No Parquet file is moved into the published directory until
+that transaction has committed, and a failure before it deletes the staged
+files. What is *not* covered is a crash inside the final rename loop itself,
+which can leave a mixed Parquet set; that window is the several `os.replace`
+calls at the very end and nothing in a single-process design closes it entirely.
+Making it a genuine all-or-nothing across both layers needs a versioned output
+directory and a pointer swap, which this project does not do.
 
 **Data quality (9 rules, 4 dimensions).** Cancellations, non-positive quantities
 and prices, duplicates, price outliers and non-product stock codes are

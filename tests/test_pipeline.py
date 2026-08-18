@@ -718,3 +718,74 @@ def test_load_publishes_neither_layer_when_sqlite_fails(cfg, tmp_path, monkeypat
             f"{name} parquet was published anyway"
         )
     assert not list(cfg["paths"]["processed"].glob("*.tmp"))  # no sidecars left behind
+
+
+def test_an_index_failure_leaves_both_layers_on_the_previous_run(cfg, tmp_path):
+    """Indexes are built inside the swap transaction, not after it.
+
+    Built after the COMMIT, a failure there left the warehouse holding tonight's
+    tables while the error path deleted the staged Parquet - so SQLite was the
+    new run, Parquet was entirely the old one, and load() raised, telling the
+    caller nothing had been published. Reproduced by pointing an index at a
+    column that does not exist: sqlite 7 rows against parquet 522,566.
+    """
+    import sqlite3
+
+    from retail_pipeline import pipeline as P
+
+    cfg["paths"] = dict(cfg["paths"], processed=tmp_path, warehouse=tmp_path / "w.db")
+    # date_key and stock_code exist because the real _INDEXES reference them.
+    first = {
+        "fact_sales": pd.DataFrame(
+            {"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["2011-01-01"]}
+        )
+    }
+    P.load(first, cfg)
+
+    second = {
+        "fact_sales": pd.DataFrame({"invoice_no": ["B"] * 5, "stock_code": ["T"] * 5})
+    }
+    bad = ("CREATE INDEX ix_boom ON fact_sales(no_such_column)",)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(P, "_INDEXES", bad)
+        with pytest.raises(sqlite3.OperationalError):
+            P.load(second, cfg)
+
+    with sqlite3.connect(cfg["paths"]["warehouse"]) as conn:
+        rows = conn.execute("SELECT count(*) FROM fact_sales").fetchone()[0]
+        leftover = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%__new'"
+            )
+        ]
+    assert rows == 1, "SQLite moved to the failed run"
+    assert len(pd.read_parquet(tmp_path / "fact_sales.parquet")) == 1
+    # pandas commits <name>__new outside the swap transaction, so a rollback
+    # would otherwise leave a partial run's rows sitting in the database.
+    assert leftover == [], f"staging tables leaked: {leftover}"
+
+
+def test_a_table_that_stops_being_published_is_retired(cfg, tmp_path):
+    """The warehouse accumulated tables no code writes any more - dq_results and
+    adoption_top_products sat there for weeks, still answering queries with
+    whatever the last version that wrote them produced. A stale table that
+    answers is worse than a missing one that errors."""
+    import sqlite3
+
+    from retail_pipeline import pipeline as P
+
+    cfg["paths"] = dict(cfg["paths"], processed=tmp_path, warehouse=tmp_path / "w.db")
+    frame = pd.DataFrame({"a": [1]})
+    P.load({"keep": frame, "retire_me": frame}, cfg)
+    assert (tmp_path / "retire_me.parquet").exists()
+
+    P.load({"keep": frame}, cfg)
+
+    with sqlite3.connect(cfg["paths"]["warehouse"]) as conn:
+        tables = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert "keep" in tables and "retire_me" not in tables
+    assert not (tmp_path / "retire_me.parquet").exists(), "Parquet outlived its table"
