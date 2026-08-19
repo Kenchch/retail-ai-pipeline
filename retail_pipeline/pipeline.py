@@ -648,9 +648,22 @@ def mark_published(cfg: dict, run_id: str) -> None:
     tell a version that has been superseded ("stale") from one that never
     published at all ("failed"); see the note there.
     """
-    (reports_dir(cfg, run_id) / PUBLISHED_MARKER).write_text(
-        run_id + "\n", encoding="utf-8"
-    )
+    # Best effort, on purpose. The load has already committed and the
+    # warehouse already carries the run_id that authorises publishing, so this
+    # file changes nothing about whether the run succeeded. Letting it raise
+    # turned a full, committed run into a failed one over a diagnostic write.
+    try:
+        (reports_dir(cfg, run_id) / PUBLISHED_MARKER).write_text(
+            run_id + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        log.warning(
+            "Could not write the %s marker for %s (%s). The warehouse stamp is "
+            "what authorises the publish, so this is diagnostic only.",
+            PUBLISHED_MARKER,
+            run_id,
+            exc,
+        )
 
 
 def _snapshot_for_readers(cfg: dict, version: Path) -> None:
