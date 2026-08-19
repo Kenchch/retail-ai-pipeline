@@ -19,6 +19,7 @@ $AIRFLOW_HOME/dags/.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import sys
 import time
@@ -34,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from retail_pipeline.adoption import measure_adoption
 from retail_pipeline.pipeline import (
     check_quality,
+    current_run_id,
     extract,
     finalize_reports,
     load,
@@ -42,10 +44,13 @@ from retail_pipeline.pipeline import (
     prune_report_versions,
     reports_dir,
     transform,
+    warehouse_run_id,
     write_quality_report,
     write_run_metrics,
 )
 from retail_pipeline.recommend import recommend
+
+log = logging.getLogger("pipeline")
 
 STAGING_RETENTION_DAYS = 7
 
@@ -204,7 +209,7 @@ def task_publish(**context):
         )
         for n in names
     }
-    load(tables, cfg)
+    load(tables, cfg, run_id=run_id)
     # The warehouse now holds this run. That fact is recorded IN the version
     # directory, so finalize_reports can decide what to do with it without
     # asking Airflow about this task's state - which is what makes the
@@ -246,7 +251,7 @@ def task_run_metrics(**context):
         n_products=len(dim_product),
         recs=recs,
         adoption_headline=headline,
-        runtime_seconds=0.0,  # per-task durations live in the Airflow UI
+        compute_seconds=0.0,  # per-task durations live in the Airflow UI
         dest=reports_dir(cfg, run_id),
         run_id=run_id,
     )
@@ -267,9 +272,19 @@ def task_finalize_reports(**context):
     like any other.
     """
     cfg = load_config()
-    outcome = finalize_reports(cfg, context["run_id"])
+    run_id = context["run_id"]
+    outcome = finalize_reports(cfg, run_id)
     if outcome == "published":
         prune_report_versions(cfg)
+    # The two layers are versioned separately and there is no cross-layer
+    # transaction, so every run says which run each of them is on. An operator
+    # comparing the two lines can see a mismatch instead of discovering it.
+    log.info(
+        "finalize_reports: %s | warehouse run %s | reports run %s",
+        outcome,
+        warehouse_run_id(cfg),
+        current_run_id(cfg),
+    )
     return outcome
 
 

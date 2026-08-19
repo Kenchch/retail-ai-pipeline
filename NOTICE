@@ -1,8 +1,8 @@
 Third-party notices
 ===================
 
-This repository is MIT licensed (see LICENSE). That licence covers the
-code only.
+Original repository contents - code, documentation and reports - are
+licensed under MIT (see LICENSE).
 
 Source dataset
 --------------
@@ -10,9 +10,9 @@ Source dataset
 UCI Machine Learning Repository, "Online Retail" (Chen, D., 2015).
 https://archive.ics.uci.edu/dataset/352/online+retail
 
-The dataset is downloaded by scripts/get_data.py at build time and is not
-redistributed in this repository. It carries its own terms; see the link
-above.
+The dataset is not redistributed here and is separately licensed. It is
+downloaded by scripts/get_data.py at build time; see the link above for
+its terms.
 
 This file exists because the note used to sit at the bottom of LICENSE,
 which stopped GitHub's licence detector recognising the text as MIT - the

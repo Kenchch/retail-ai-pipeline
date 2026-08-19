@@ -26,7 +26,7 @@ Source: UCI **Online Retail** — a UK online giftware retailer, Dec 2010 – De
 | Loaded | 522,566 line items · 3,803 products · 4,334 customers · 374 days (305 traded) |
 | Recommendations | 17,083 rows covering the full catalogue |
 | Adoption | 62 licensed users, 5 teams, 12 weeks |
-| Runtime | 12.4 s — `runtime_seconds` in `reports/run_metrics.json` |
+| Runtime | 8.0 s of compute — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top |
 
 The strongest associations are ones a merchandiser would expect — the cheapest
 sanity check there is:
@@ -60,8 +60,16 @@ Build it yourself in ~45 minutes: [`bi/BUILD_POWERBI.md`](bi/BUILD_POWERBI.md).
 ## How it works
 
 ```
-extract → data quality → star schema → load → recommend → adoption
+extract → data quality → star schema → recommend ─┐
+                                                  ├→ run metrics → publish → finalize
+                          adoption (telemetry) ───┘
 ```
+
+`recommend` and `adoption` are separate branches — adoption reads the usage
+telemetry and needs nothing the extract produces. They meet at `run metrics`,
+which builds the report version from the staged tables; `publish` is the only
+task that writes to the warehouse, and `finalize` points `reports/CURRENT` at
+the version or archives it.
 
 Three modules, scheduled as ten Airflow tasks
 ([`dags/`](dags/retail_pipeline_dag.py)) so a failure names the stage that broke.
@@ -101,12 +109,30 @@ never becomes current. (The three files at the top of `reports/` are a copy of
 the current version, committed so a reader does not have to clone and run the
 pipeline; each one names its `run_id`.)
 
-What is *not* covered is the Parquet layer, which still promotes file by file:
-a crash inside that final rename loop can leave a mixed set. It is the same
-problem the reports had, and it has the same fix — a versioned output directory
-named by a pointer — which the warehouse does not yet do, because the Power BI
-model and every `data/processed/*.parquet` path in the repo point straight at
-that directory. SQLite is unaffected: it swaps in one transaction.
+**What is *not* covered, stated exactly.** Two things.
+
+The Parquet layer still promotes file by file, so a crash inside that final
+rename loop can leave a mixed set. SQLite is unaffected — it swaps in one
+transaction.
+
+And there is no transaction spanning the warehouse and `reports/CURRENT`, so a
+crash between the two leaves a new warehouse beside old reports. Both have the
+same fix — one versioned directory holding `retail.db`, the Parquet files and
+the reports, named by a single `CURRENT` that every consumer reads first — and
+this project does not do it, because the Power BI model and every
+`data/processed/*.parquet` path point straight at a fixed directory.
+
+What it does instead is make the mismatch **detectable**. `load()` stamps the
+run_id inside its own swap transaction, so the warehouse says which run it
+holds the instant it holds it; `reports/CURRENT` says which run the reports
+are. Every run logs both:
+
+```
+Done in 12.2s | warehouse run local_20260819T094207619994 | reports run local_20260819T094207619994
+```
+
+Two different ids is a warehouse ahead of its reports, and re-running the
+finaliser publishes the version the warehouse already has.
 
 **Data quality (9 rules, 4 dimensions).** Cancellations, non-positive quantities
 and prices, duplicates, price outliers and non-product stock codes are

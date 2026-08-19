@@ -435,6 +435,116 @@ def test_pruning_never_removes_the_published_version(cfg, tmp_path):
     assert (published_reports(cfg) / "run_metrics.json").exists()
 
 
+def test_the_data_does_not_move_unless_the_version_is_complete(
+    sample, cfg, tmp_path, monkeypatch
+):
+    """FAULT INJECTION: run_metrics.json cannot be written.
+
+    The local entry point used to call load() first and write the metrics
+    afterwards, which the DAG had already been fixed not to do. A failure
+    writing that one file then left the warehouse holding tonight's data,
+    reports/CURRENT still naming last night's version, and tonight's
+    incomplete version in failed_runs - the data had moved and every report
+    describing it had been thrown away.
+
+    Nothing in run_metrics needs the load to have happened: the counts, the
+    frames and the input digests all exist before it. So the rule is the same
+    in both entry points - the version is complete before the data moves.
+    """
+    from retail_pipeline import adoption as adoption_module
+    from retail_pipeline import recommend as recommend_module
+
+    cfg = _staged_cfg(cfg, tmp_path)
+    cfg["paths"]["processed"] = tmp_path / "processed"
+    cfg["paths"]["warehouse"] = tmp_path / "warehouse" / "retail.db"
+    _fill_version(cfg, "run_old", marker="old")
+    P.publish_version(cfg, "run_old")
+
+    empty = pd.DataFrame({"stock_code": [], "metric": [], "value": []})
+
+    def fake_adoption(c, reports_dest=None, run_id=None):
+        (reports_dest / "adoption_report.md").write_text("new", encoding="utf-8")
+        return {
+            "adoption_headline": pd.DataFrame(
+                {"metric": ["reach_pct"], "value": [1.0]}
+            ),
+            "adoption_weekly": empty,
+            "adoption_by_team": empty,
+        }
+
+    loaded = []
+    monkeypatch.setattr(P, "load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(P, "extract", lambda c: sample)
+    monkeypatch.setattr(adoption_module, "measure_adoption", fake_adoption)
+    monkeypatch.setattr(
+        recommend_module,
+        "recommend",
+        lambda t, c: pd.DataFrame({"stock_code": ["85123A"], "rec": ["71053"]}),
+    )
+    monkeypatch.setattr(P, "load", lambda *a, **k: loaded.append(a))
+
+    def no_disk(*a, **k):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(P, "write_run_metrics", no_disk)
+
+    with pytest.raises(OSError, match="no space"):
+        P.run()
+
+    assert loaded == [], "the data was published without a complete report version"
+    assert current_run_id(cfg) == "run_old"
+    for name in REPORT_NAMES:
+        assert (
+            (published_reports(cfg) / name)
+            .read_text(encoding="utf-8")
+            .startswith("old")
+        )
+
+
+def test_the_warehouse_records_which_run_it_holds(cfg, tmp_path):
+    """ "Did this run's data reach the warehouse" is answered by the warehouse.
+
+    The finaliser used to read a marker file written just after the commit, so
+    a crash in between left the warehouse ahead of reports/CURRENT with nothing
+    recording it. The run_id is stamped inside load()'s swap transaction, which
+    means it becomes true at the same instant the data does.
+    """
+    cfg = _staged_cfg(cfg, tmp_path)
+    cfg["paths"] = dict(
+        cfg["paths"], processed=tmp_path / "processed", warehouse=tmp_path / "w.db"
+    )
+    cfg["paths"]["processed"].mkdir(parents=True)
+
+    assert P.warehouse_run_id(cfg) is None  # nothing published yet
+
+    frame = pd.DataFrame({"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["d"]})
+    P.load({"fact_sales": frame}, cfg, run_id="run_x")
+    assert P.warehouse_run_id(cfg) == "run_x"
+
+    # ... and the finaliser publishes on that alone, with no marker file.
+    version = _fill_version(cfg, "run_x")
+    assert not (version / P.PUBLISHED_MARKER).exists()
+    assert finalize_reports(cfg, "run_x") == "published"
+    assert current_run_id(cfg) == "run_x"
+
+
+def test_a_warehouse_on_a_different_run_does_not_publish_this_version(cfg, tmp_path):
+    """The stamp has to be checked, not merely present: a warehouse left on
+    last night's run must not let tonight's failed version become current."""
+    cfg = _staged_cfg(cfg, tmp_path)
+    cfg["paths"] = dict(
+        cfg["paths"], processed=tmp_path / "processed", warehouse=tmp_path / "w.db"
+    )
+    cfg["paths"]["processed"].mkdir(parents=True)
+    frame = pd.DataFrame({"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["d"]})
+    P.load({"fact_sales": frame}, cfg, run_id="run_last_night")
+
+    _fill_version(cfg, "run_tonight")
+    assert finalize_reports(cfg, "run_tonight") == "failed"
+    assert current_run_id(cfg) is None
+    assert P.warehouse_run_id(cfg) == "run_last_night"
+
+
 def test_a_failed_gate_does_not_overwrite_the_published_report(sample, cfg, tmp_path):
     """The gate report is the sharpest case.
 
