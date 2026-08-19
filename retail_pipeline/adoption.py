@@ -299,6 +299,7 @@ def write_report(
     cfg: dict,
     as_of: pd.Timestamp | None = None,
     dest: Path | None = None,
+    run_id: str | None = None,
 ) -> None:
     def cell(v):
         return "&ndash;" if v is None or pd.isna(v) else v
@@ -316,6 +317,11 @@ def write_report(
     lines = [
         "# Adoption report",
         "",
+        # The version this report belongs to. reports/CURRENT is the authority
+        # for which version is published; the copy at the top of reports/ is a
+        # convenience for GitHub readers, and this line is what lets anyone see
+        # which version that copy came from.
+        *([f"`run_id: {run_id}`", ""] if run_id else []),
         (
             f"{int(teams['licensed_users'].sum())} licensed users across "
             f"{len(teams)} teams{stamp}."
@@ -370,7 +376,7 @@ def write_report(
 
 
 def measure_adoption(
-    cfg: dict, reports_dest: Path | None = None
+    cfg: dict, reports_dest: Path | None = None, run_id: str | None = None
 ) -> dict[str, pd.DataFrame]:
     events = load_events(cfg)
     # Resolved once and shared, so the three tables cannot disagree about which
@@ -379,7 +385,7 @@ def measure_adoption(
     headline = headline_metrics(events, cfg, as_of)
     weekly = weekly_metrics(events, cfg, as_of)
     teams = team_metrics(events, cfg, as_of)
-    write_report(headline, weekly, teams, cfg, as_of, dest=reports_dest)
+    write_report(headline, weekly, teams, cfg, as_of, dest=reports_dest, run_id=run_id)
     return {
         "adoption_headline": headline,
         "adoption_weekly": weekly,

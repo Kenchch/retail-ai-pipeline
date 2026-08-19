@@ -35,10 +35,11 @@ from retail_pipeline.adoption import measure_adoption
 from retail_pipeline.pipeline import (
     check_quality,
     extract,
-    keep_failed_reports,
+    finalize_reports,
     load,
     load_config,
-    promote_reports,
+    mark_published,
+    prune_report_versions,
     reports_dir,
     transform,
     write_quality_report,
@@ -94,10 +95,13 @@ def task_quality(**context):
     cfg = load_config()
     run_id = context["run_id"]
     raw = _read_staged(cfg, "raw", run_id, "extract")
-    staged = reports_dir(cfg, run_id)
-    # raises -> DAG stops here, leaving its GATE FAILED report in staging for
-    # preserve_failed_reports to park under reports/failed_runs/.
-    clean, quarantine, results = check_quality(raw, cfg, reports_dest=staged)
+    version = reports_dir(cfg, run_id)
+    # raises -> the DAG stops here, leaving its GATE FAILED report in this
+    # run's version directory for finalize_reports to park under
+    # reports/failed_runs/. It is never pointed at by reports/CURRENT.
+    clean, quarantine, results = check_quality(
+        raw, cfg, reports_dest=version, run_id=run_id
+    )
     # Into this run's staging, not reports/. `publish` promotes it; a run that
     # never publishes must not overwrite the report describing the data the
     # warehouse actually holds.
@@ -107,7 +111,8 @@ def task_quality(**context):
         len(raw),
         len(clean),
         len(quarantine),
-        dest=staged,
+        dest=version,
+        run_id=run_id,
     )
     clean.to_parquet(_staging(cfg, "clean", run_id), index=False)
     quarantine.to_parquet(_staging(cfg, "quarantine", run_id), index=False)
@@ -153,7 +158,7 @@ def task_adoption(**context):
     cfg = load_config()
     run_id = context["run_id"]
     for name, df in measure_adoption(
-        cfg, reports_dest=reports_dir(cfg, run_id)
+        cfg, reports_dest=reports_dir(cfg, run_id), run_id=run_id
     ).items():
         df.to_parquet(_staging(cfg, name, run_id), index=False)
 
@@ -200,25 +205,15 @@ def task_publish(**context):
         for n in names
     }
     load(tables, cfg)
-    # Only now do this run's reports become the published ones. Nothing between
-    # the load() commit and here can fail, so the warehouse and reports/ move
-    # together.
-    promote_reports(cfg, run_id)
+    # The warehouse now holds this run. That fact is recorded IN the version
+    # directory, so finalize_reports can decide what to do with it without
+    # asking Airflow about this task's state - which is what makes the
+    # finaliser a plain, testable, retry-safe function.
+    mark_published(cfg, run_id)
 
 
-def task_preserve_failed_reports(**context):
-    """Keep a failed run's reports, without publishing them.
-
-    `one_failed`, so it fires whether the gate stopped the run or the publish
-    did. Files land in reports/failed_runs/<run_id>/ - readable by whoever is
-    investigating, invisible to anything reading reports/.
-    """
-    cfg = load_config()
-    keep_failed_reports(cfg, context["run_id"])
-
-
-def task_run_metrics(**_):
-    """Write reports/run_metrics.json - the machine-readable provenance record.
+def task_run_metrics(**context):
+    """Write run_metrics.json into this run's version directory.
 
     This task exists because `run()` does not run in production. The DAG wires
     the stage functions up directly, and `run()` was the only place that called
@@ -227,19 +222,21 @@ def task_run_metrics(**_):
     developer's last local run - actively asserting the wrong inputs for every
     night thereafter.
 
-    `all_success` deliberately: a metrics file describing a run that did not
-    publish would recreate the same problem in a new form.
+    It reads THIS RUN'S STAGED TABLES, and it runs BEFORE publish. Reading the
+    published Parquet after the publish meant the file was assembled from a
+    different batch than the two reports beside it: on the first ever run there
+    was nothing published to read, and on any run whose publish failed it
+    described the previous night's data under this night's date. A version has
+    to be complete before it can be pointed at, so every file in it is built
+    from the same staged tables.
     """
     cfg = load_config()
-    recs = pd.read_parquet(cfg["paths"]["processed"] / "recommendations.parquet")
-    dim_product = pd.read_parquet(cfg["paths"]["processed"] / "dim_product.parquet")
-    fact = pd.read_parquet(
-        cfg["paths"]["processed"] / "fact_sales.parquet", columns=["invoice_no"]
-    )
-    quarantine = pd.read_parquet(
-        cfg["paths"]["processed"] / "quarantine.parquet", columns=["invoice_no"]
-    )
-    headline = pd.read_parquet(cfg["paths"]["processed"] / "adoption_headline.parquet")
+    run_id = context["run_id"]
+    recs = _read_staged(cfg, "recommendations", run_id, "build_recommendations")
+    dim_product = _read_staged(cfg, "dim_product", run_id, "transform")
+    fact = _read_staged(cfg, "fact_sales", run_id, "transform")
+    quarantine = _read_staged(cfg, "quarantine", run_id, "data_quality_gate")
+    headline = _read_staged(cfg, "adoption_headline", run_id, "measure_adoption")
     n_clean, n_q = len(fact), len(quarantine)
     write_run_metrics(
         cfg,
@@ -250,7 +247,30 @@ def task_run_metrics(**_):
         recs=recs,
         adoption_headline=headline,
         runtime_seconds=0.0,  # per-task durations live in the Airflow UI
+        dest=reports_dir(cfg, run_id),
+        run_id=run_id,
     )
+
+
+def task_finalize_reports(**context):
+    """Publish this run's report version, or archive it. Exactly once, at the end.
+
+    `all_done` on every task that writes into the version directory plus
+    `publish`, so it cannot run until all of them have reached a terminal
+    state. The previous archiver used `one_failed`, which fires as soon as ANY
+    upstream fails without waiting for the others: a gate failure archived the
+    version while `measure_adoption` - a root task with no upstream, running in
+    parallel - was still computing, and adoption then wrote its report into a
+    directory that had already been moved.
+
+    finalize_reports() is idempotent, which matters because this task retries
+    like any other.
+    """
+    cfg = load_config()
+    outcome = finalize_reports(cfg, context["run_id"])
+    if outcome == "published":
+        prune_report_versions(cfg)
+    return outcome
 
 
 def task_clear_staging(**context):
@@ -310,6 +330,11 @@ with DAG(
         python_callable=task_run_metrics,
         trigger_rule="all_success",
     )
+    t10 = PythonOperator(
+        task_id="finalize_reports",
+        python_callable=task_finalize_reports,
+        trigger_rule="all_done",
+    )
     t8 = PythonOperator(
         task_id="clear_staging",
         python_callable=task_clear_staging,
@@ -319,11 +344,6 @@ with DAG(
         task_id="prune_staging",
         python_callable=task_prune_staging,
         trigger_rule="all_done",
-    )
-    t_fail = PythonOperator(
-        task_id="preserve_failed_reports",
-        python_callable=task_preserve_failed_reports,
-        trigger_rule="one_failed",
     )
 
     # Everything upstream of `publish` computes into per-run staging and touches
@@ -335,9 +355,14 @@ with DAG(
     # itself. clear_staging is all_success - deleting this run's hand-off files
     # after a failure is what made the gate unrecoverable. prune_staging keeps
     # all_done but only removes directories older than STAGING_RETENTION_DAYS.
+    # write_run_metrics moved BEFORE publish: every file in a version is built
+    # from the same staged tables, so the version is complete before anything
+    # can point at it.
     t1 >> t2 >> t3 >> t4
-    [t4, t5] >> t6 >> t7 >> t8 >> t9
-    # A leaf on one_failed: if the gate or the publish stops the run, whatever
-    # reports were staged are moved to reports/failed_runs/ instead of being
-    # promoted or silently pruned.
-    [t2, t5, t6] >> t_fail
+    [t4, t5] >> t7 >> t6 >> t8 >> t9
+
+    # The finaliser waits for every task that writes into the version
+    # directory, and for the publish. all_done, so it runs whether they
+    # succeeded or not, and only once they are all finished - which is the
+    # guarantee `one_failed` could not give.
+    [t2, t5, t7, t6] >> t10

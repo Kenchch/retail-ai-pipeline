@@ -1,5 +1,7 @@
 # Adoption report
 
+`run_id: local_20260819T085501336588`
+
 62 licensed users across 5 teams &middot; four weeks ending 28 Jun 2026.
 
 _Simulated telemetry from `scripts/get_data.py` - this has not been deployed to real users. Schema and metrics are the production ones._
