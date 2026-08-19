@@ -929,3 +929,37 @@ def test_a_warehouse_predating_the_manifest_still_retires_its_legacy_tables(
         "the migration dropped a table it does not own"
     )
     assert "fact_sales" in tables
+
+
+def test_a_legacy_parquet_is_retired_even_when_its_table_is_already_gone(cfg, tmp_path):
+    """The two layers can disagree about what is still there.
+
+    Retirement intersected the "no longer published" set with the tables SQLite
+    currently holds, so SQLite's state decided the Parquet layer's. On a
+    warehouse whose database had been rebuilt or deleted - a routine recovery -
+    dq_results was absent from SQLite, so it was never retired, so
+    dq_results.parquet was never removed. Power BI reads that directory, not
+    the database, so the report kept serving a table the warehouse no longer
+    had, indefinitely.
+
+    Here: no _published, no legacy SQLite table, only the orphaned Parquet.
+    """
+    from retail_pipeline import pipeline as P
+
+    cfg["paths"] = dict(cfg["paths"], processed=tmp_path, warehouse=tmp_path / "w.db")
+    orphan = tmp_path / "dq_results.parquet"
+    pd.DataFrame({"check": ["cancelled_invoice"], "failed_rows": [9999]}).to_parquet(
+        orphan, index=False
+    )
+    assert "dq_results" in P.LEGACY_RETIRED_TABLES
+
+    P.load(
+        {
+            "fact_sales": pd.DataFrame(
+                {"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["2011-01-01"]}
+            )
+        },
+        cfg,
+    )
+
+    assert not orphan.exists(), "an orphaned legacy Parquet outlived the migration"

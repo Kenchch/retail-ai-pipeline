@@ -707,9 +707,21 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
                         "SELECT name FROM sqlite_master WHERE type='table'"
                     )
                 }
-                retired = sorted((previous - set(tables)) & present)
+                # Two sets, because the two layers can disagree about what is
+                # still there. `retired` is what this pipeline once published
+                # and no longer does - the authority for BOTH layers. The
+                # SQLite DROP is separately restricted to what SQLite actually
+                # has, since a table can be absent there (a rebuilt or deleted
+                # warehouse.db) while its Parquet file is still sitting in the
+                # analytics directory. Intersecting before deciding what to
+                # retire made SQLite's state decide the Parquet layer's, so
+                # dq_results.parquet survived every upgrade of a warehouse
+                # whose database had been rebuilt - and a Power BI folder
+                # source reads that directory, not the database.
+                retired = sorted(previous - set(tables))
                 for gone in retired:
-                    conn.execute(f'DROP TABLE IF EXISTS "{gone}"')
+                    if gone in present:
+                        conn.execute(f'DROP TABLE IF EXISTS "{gone}"')
                     log.info("Retired %s - no longer published", gone)
                 conn.execute("DELETE FROM _published")
                 conn.executemany(
@@ -744,6 +756,8 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
     for tmp, final in staged:
         os.replace(tmp, final)
     for gone in retired:
+        # Unconditional: `retired` is what we no longer publish, not what
+        # SQLite happened to still hold.
         (out / f"{gone}.parquet").unlink(missing_ok=True)
     log.info("Loaded %s tables to Parquet and SQLite", len(tables))
 
