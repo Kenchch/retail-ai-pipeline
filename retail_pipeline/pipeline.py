@@ -619,6 +619,26 @@ def published_reports(cfg: dict) -> Path | None:
     return d if d.is_dir() else None
 
 
+def warehouse_run_id(cfg: dict) -> str | None:
+    """The run_id the warehouse itself says it holds, or None.
+
+    Written inside load()'s swap transaction, so it is true the instant the
+    data is - no window. This is the authority for "did this run publish";
+    the marker file below is a fallback for a load() called without a run_id.
+    """
+    db = cfg["paths"]["warehouse"]
+    if not db.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(db, timeout=60.0)) as conn:
+            row = conn.execute(
+                "SELECT run_id FROM _publication WHERE id = 1"
+            ).fetchone()
+    except sqlite3.Error:
+        return None  # no manifest table: a warehouse from before this existed
+    return row[0] if row else None
+
+
 def mark_published(cfg: dict, run_id: str) -> None:
     """Record that the data for this version reached the warehouse.
 
@@ -726,7 +746,9 @@ def finalize_reports(cfg: dict, run_id: str) -> str:
         return "noop"  # already published - this is a retry
     if not version.is_dir():
         return "noop"  # already archived - this is a retry
-    if (version / PUBLISHED_MARKER).exists():
+    # The warehouse first, because its answer commits atomically with the data.
+    # The marker file is the fallback, for a load() called without a run_id.
+    if warehouse_run_id(cfg) == run_id or (version / PUBLISHED_MARKER).exists():
         publish_version(cfg, run_id)
         return "published"
     keep_failed_reports(cfg, run_id)
@@ -758,7 +780,7 @@ def prune_report_versions(cfg: dict, keep: int = 5) -> list[str]:
     return removed
 
 
-def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
+def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) -> None:
     """Publish to Parquet and SQLite, staging both so a mid-load failure cannot
     leave the two layers describing different runs.
 
@@ -890,6 +912,26 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
                     "INSERT INTO _published(name) VALUES (?)",
                     [(n,) for n in sorted(tables)],
                 )
+                # Which run this data is, recorded INSIDE the swap transaction.
+                #
+                # The report finaliser has to answer "did this run's data reach
+                # the warehouse", and it used to answer it from a file written
+                # just after the commit - so a crash in between left the
+                # warehouse ahead of reports/CURRENT with nothing recording it.
+                # Stamped here, the answer commits atomically with the data it
+                # describes, and a warehouse/report mismatch becomes something
+                # you can detect rather than something you discover.
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS _publication "
+                    "(id INTEGER PRIMARY KEY CHECK (id = 1), "
+                    "run_id TEXT, published_at TEXT)"
+                )
+                conn.execute("DELETE FROM _publication")
+                conn.execute(
+                    "INSERT INTO _publication(id, run_id, published_at) "
+                    "VALUES (1, ?, ?)",
+                    (run_id, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+                )
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -936,7 +978,7 @@ def write_run_metrics(
     n_products: int,
     recs: pd.DataFrame,
     adoption_headline: pd.DataFrame,
-    runtime_seconds: float,
+    compute_seconds: float,
     dest: Path | None = None,
     run_id: str | None = None,
 ) -> dict:
@@ -973,7 +1015,12 @@ def write_run_metrics(
         # digest makes "which input produced this report" answerable from the
         # report itself.
         "inputs": _input_fingerprint(cfg),
-        "runtime_seconds": round(runtime_seconds, 1),
+        # Renamed from runtime_seconds, because what it measures changed. This
+        # file is written before the publish now - it has to be, or the data
+        # can move without a complete version describing it - so it can only
+        # ever cover the compute. The publish is a few seconds more; the log
+        # line at the end of run() reports the total.
+        "compute_seconds": round(compute_seconds, 1),
     }
     (dest or cfg["paths"]["reports"]).mkdir(parents=True, exist_ok=True)
     ((dest or cfg["paths"]["reports"]) / "run_metrics.json").write_text(
@@ -991,9 +1038,9 @@ def run(config_path: str | None = None) -> dict:
     for key in ("processed", "reports"):
         cfg["paths"][key].mkdir(parents=True, exist_ok=True)
 
-    # Reports are published WITH the data, not before it. Everything below
-    # writes into this run's staging directory; reports/ is only touched once
-    # load() has committed. See reports_dir().
+    # Same order as the DAG, deliberately. The version is built COMPLETE
+    # first, and only then is the data allowed to move; see the comment at
+    # load() below.
     run_id = f"local_{datetime.now(timezone.utc):%Y%m%dT%H%M%S%f}"
     version = reports_dir(cfg, run_id)
     try:
@@ -1019,12 +1066,17 @@ def run(config_path: str | None = None) -> dict:
         log.info("--- 5/5 adoption")
         adoption = measure_adoption(cfg, reports_dest=version, run_id=run_id)
 
-        load(
-            {**tables, "quarantine": quarantine, "recommendations": recs, **adoption},
-            cfg,
-        )
-        mark_published(cfg, run_id)
-
+        # The last file of the version, and still BEFORE load(). This used to
+        # run after the load had committed, so a failure writing it - a full
+        # disk, a locked file - left the warehouse holding tonight's data,
+        # CURRENT still naming last night's reports, and tonight's incomplete
+        # version in failed_runs. The data had moved and every report
+        # describing it had been thrown away.
+        #
+        # Nothing here needs the load to have happened: the counts, the frames
+        # and the input digests all exist already. So the rule is simply that
+        # the version is complete before the data moves, which is the same
+        # order the DAG runs its tasks in.
         metrics = write_run_metrics(
             cfg,
             n_raw=len(raw),
@@ -1033,24 +1085,42 @@ def run(config_path: str | None = None) -> dict:
             n_products=len(tables["dim_product"]),
             recs=recs,
             adoption_headline=adoption["adoption_headline"],
-            runtime_seconds=time.perf_counter() - started,
+            compute_seconds=time.perf_counter() - started,
             dest=version,
             run_id=run_id,
         )
+
+        load(
+            {**tables, "quarantine": quarantine, "recommendations": recs, **adoption},
+            cfg,
+            run_id=run_id,
+        )
+        # Belt and braces. load() has already stamped the run_id inside its
+        # own transaction, which is what finalize_reports actually reads; this
+        # file is the fallback for a load() called without one.
+        mark_published(cfg, run_id)
     except BaseException:
         # Whatever was computed before the failure is still worth reading, so
         # the version is parked under reports/failed_runs/ - it never becomes
-        # something CURRENT can name.
-        keep_failed_reports(cfg, run_id)
+        # something CURRENT can name. finalize_reports rather than
+        # keep_failed_reports, so both entry points take the same decision in
+        # the same place.
+        finalize_reports(cfg, run_id)
         shutil.rmtree(cfg["paths"]["staging"] / run_id, ignore_errors=True)
         raise
 
-    # The load committed and the version is complete, so it becomes the
-    # published one - a single atomic write to reports/CURRENT.
-    publish_version(cfg, run_id)
+    finalize_reports(cfg, run_id)
     prune_report_versions(cfg)
     shutil.rmtree(cfg["paths"]["staging"] / run_id, ignore_errors=True)
-    log.info("Done in %.1fs", metrics["runtime_seconds"])
+    # Both ids, every run. The two layers are versioned separately and there is
+    # no cross-layer transaction, so the one thing an operator needs is to be
+    # able to see at a glance whether they agree.
+    log.info(
+        "Done in %.1fs | warehouse run %s | reports run %s",
+        time.perf_counter() - started,
+        warehouse_run_id(cfg),
+        current_run_id(cfg),
+    )
     return metrics
 
 

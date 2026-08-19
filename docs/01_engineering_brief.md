@@ -87,9 +87,13 @@ disappearing from the report.
 ## Non-functional
 
 All thresholds and the team roster in `config.yaml`; no magic numbers in code.
-Full refresh inside the overnight window — 12.4 s on the reference run, with
-`runtime_seconds` in `reports/run_metrics.json` as the authoritative figure,
-written by the run itself. Machine-readable run metrics plus a human-readable
+Full refresh inside the overnight window — 8.0 s of compute on the reference
+run, with `compute_seconds` in `reports/run_metrics.json` as the authoritative
+figure. It covers everything up to the publish and not the publish itself,
+because that file is written before the data moves - a version has to be
+complete before anything can point at it - so the wall-clock total is a few
+seconds more, and the run's closing log line reports it alongside the warehouse
+and report run ids. Machine-readable run metrics plus a human-readable
 quality report per run, and a sha256 of each raw input so any published number
 can be traced back to the file that produced it. For the telemetry the digest
 covers the metric-bearing columns rather than the whole file, because
