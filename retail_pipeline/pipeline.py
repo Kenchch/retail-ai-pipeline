@@ -205,7 +205,11 @@ CHECKS: list[Check] = [
 
 
 def check_quality(
-    df: pd.DataFrame, cfg: dict, *, reports_dest: Path | None = None
+    df: pd.DataFrame,
+    cfg: dict,
+    *,
+    reports_dest: Path | None = None,
+    run_id: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Return (clean rows, quarantined rows with reasons, per-rule results).
 
@@ -287,6 +291,7 @@ def check_quality(
             rate=rate,
             ceiling=cfg["quality"]["max_quarantine_rate"],
             dest=reports_dest,
+            run_id=run_id,
         )
         # Fail before loading, so a broken upstream extract leaves last night's
         # published data intact rather than replacing it with something thinner.
@@ -308,9 +313,17 @@ def write_quality_report(
     rate: float | None = None,
     ceiling: float | None = None,
     dest: Path | None = None,
+    run_id: str | None = None,
 ) -> None:
     pct = 100 * n_q / n_in if n_in else 0.0
     lines = ["# Data quality report", ""]
+    if run_id:
+        # Every report names the version it belongs to. reports/CURRENT is the
+        # authority for which version is published; the copies at the top of
+        # reports/ are a convenience for GitHub readers, and this line is what
+        # lets anyone tell whether the copy they are looking at is the current
+        # one.
+        lines += [f"`run_id: {run_id}`", ""]
     if gate_failed:
         # State the outcome at the top. A reader who sees only the table cannot
         # tell a published run from a rejected one.
@@ -540,60 +553,209 @@ _INDEXES = (
 )
 
 
-def reports_dir(cfg: dict, run_id: str | None = None) -> Path:
-    """Where a report should be written *now*.
+# The three files that make up one report version. Named once so the promote,
+# the reader snapshot and the tests cannot disagree about what "complete" means.
+REPORT_NAMES = (
+    "data_quality_report.md",
+    "adoption_report.md",
+    "run_metrics.json",
+)
 
-    Reports used to go straight to reports/ from the tasks that compute them,
-    which all run before `publish`. A run whose publish then failed left last
-    night's warehouse beside tonight's reports - the reports describing data
-    nobody can query. They are published with the data instead: written into
-    the run's staging directory, and moved into place only after load() has
-    committed.
+# Written into a version directory by the step that publishes the data. Its
+# presence is the only thing the finaliser consults, which is what lets the
+# finaliser be re-run safely and lets it work without asking Airflow about
+# another task's state.
+PUBLISHED_MARKER = ".published"
 
-    A failed run still needs its diagnostics, so those go to
-    reports/failed_runs/<run_id>/ rather than over the last good report. See
-    promote_reports().
+
+def reports_dir(cfg: dict, run_id: str) -> Path:
+    """This run's version directory: reports/runs/<run_id>/.
+
+    Reports used to be written straight to reports/ by the tasks that compute
+    them, all of which run before `publish`. A run whose publish then failed
+    left last night's warehouse beside tonight's reports - reports describing
+    data nobody can query.
+
+    Staging them and moving them across afterwards was not enough either: three
+    separate os.replace() calls can half-succeed, and on Windows they routinely
+    do, because replacing a file another process holds open raises
+    PermissionError. That leaves reports/ with one new report and two old ones
+    and nothing recording it. So a version is a DIRECTORY, built complete and
+    then pointed at, and the only thing that changes about the published set is
+    one line in one file. See publish_version().
     """
-    if run_id is None:
-        return cfg["paths"]["reports"]
-    d = cfg["paths"]["staging"] / run_id / "reports"
+    d = cfg["paths"]["reports"] / "runs" / run_id
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def promote_reports(cfg: dict, run_id: str) -> list[str]:
-    """Move this run's staged reports into reports/. Called after publish."""
-    staged = cfg["paths"]["staging"] / run_id / "reports"
-    if not staged.is_dir():
-        return []
-    final = cfg["paths"]["reports"]
-    final.mkdir(parents=True, exist_ok=True)
-    moved = []
-    for src in sorted(staged.iterdir()):
-        if src.is_file():
-            os.replace(src, final / src.name)
-            moved.append(src.name)
-    return moved
+def _version_root(cfg: dict) -> Path:
+    return cfg["paths"]["reports"] / "runs"
+
+
+def _current_file(cfg: dict) -> Path:
+    return cfg["paths"]["reports"] / "CURRENT"
+
+
+def current_run_id(cfg: dict) -> str | None:
+    """The run_id reports/CURRENT names, or None if nothing is published."""
+    f = _current_file(cfg)
+    if not f.exists():
+        return None
+    return f.read_text(encoding="utf-8").strip() or None
+
+
+def published_reports(cfg: dict) -> Path | None:
+    """The version directory a reader should read. Always complete.
+
+    Everything that consumes these reports programmatically goes through here,
+    so it can never observe a half-swapped set: CURRENT names the old version
+    or the new one, never a mixture.
+    """
+    run_id = current_run_id(cfg)
+    if run_id is None:
+        return None
+    d = _version_root(cfg) / run_id
+    return d if d.is_dir() else None
+
+
+def mark_published(cfg: dict, run_id: str) -> None:
+    """Record that the data for this version reached the warehouse.
+
+    Called immediately after load() commits. The finaliser reads this rather
+    than asking Airflow whether the publish task succeeded, which keeps it a
+    plain function - testable, and correct when Airflow retries it.
+    """
+    (reports_dir(cfg, run_id) / PUBLISHED_MARKER).write_text(
+        run_id + "\n", encoding="utf-8"
+    )
+
+
+def _snapshot_for_readers(cfg: dict, version: Path) -> None:
+    """Copy the published version up to reports/ for people reading on GitHub.
+
+    These top-level copies are a CONVENIENCE, not the contract: the repository
+    commits them so nobody has to clone and run the pipeline to see what it
+    produces. Nothing in this codebase reads them. CURRENT is the authority,
+    and each report names its own run_id, so a copy that failed half way is
+    self-identifying rather than quietly wrong.
+
+    Deliberately best-effort: a file somebody has open must not turn a
+    successful publish into a failed run.
+    """
+    for name in REPORT_NAMES:
+        src = version / name
+        if not src.exists():
+            continue
+        try:
+            shutil.copyfile(src, cfg["paths"]["reports"] / name)
+        except OSError as exc:  # pragma: no cover - needs a locked file
+            log.warning(
+                "Could not refresh the reports/%s copy (%s). reports/CURRENT "
+                "still names the published version.",
+                name,
+                exc,
+            )
+
+
+def publish_version(cfg: dict, run_id: str) -> Path:
+    """Make this version the published one, by writing ONE file.
+
+    reports/CURRENT is replaced with os.replace of a temp file - a single
+    atomic filesystem operation on POSIX and on Windows. Before the call the
+    previous version is published in full; after it, this one is. There is no
+    state in between, which is the entire reason a version is a directory
+    rather than three files promoted one at a time.
+    """
+    version = reports_dir(cfg, run_id)
+    missing = [n for n in REPORT_NAMES if not (version / n).exists()]
+    if missing:
+        # Pointing at a version before it is complete is precisely the failure
+        # the pointer exists to prevent.
+        raise FileNotFoundError(
+            "{} is missing {} - refusing to publish an incomplete report "
+            "version.".format(version, ", ".join(missing))
+        )
+    tmp = _current_file(cfg).with_suffix(".tmp")
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(run_id + "\n", encoding="utf-8")
+    os.replace(tmp, _current_file(cfg))
+    _snapshot_for_readers(cfg, version)
+    log.info("Published report version %s", run_id)
+    return version
 
 
 def keep_failed_reports(cfg: dict, run_id: str) -> Path | None:
-    """Park a failed run's reports where they can be read without overwriting
-    the last successful ones.
+    """Park a version that never became current, under reports/failed_runs/.
 
     The gate's own message says "investigate the source extract", and this is
-    what an investigator opens - so it has to survive, and it must not replace
-    the report describing the data currently in the warehouse.
+    what an investigator opens - so it has to survive. It must also never
+    become the published set, which is why it moves out of runs/ rather than
+    staying somewhere CURRENT could later name.
     """
-    staged = cfg["paths"]["staging"] / run_id / "reports"
-    if not staged.is_dir() or not any(staged.iterdir()):
+    version = _version_root(cfg) / run_id
+    if not version.is_dir():
         return None
     dest = cfg["paths"]["reports"] / "failed_runs" / run_id
-    dest.mkdir(parents=True, exist_ok=True)
-    for src in sorted(staged.iterdir()):
-        if src.is_file():
-            os.replace(src, dest / src.name)
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(version, dest)
     log.warning("Reports for the failed run are in %s", dest)
     return dest
+
+
+def finalize_reports(cfg: dict, run_id: str) -> str:
+    """Decide what becomes of this run's version. Safe to run twice.
+
+    Returns "published", "failed" or "noop".
+
+    One function, run once every task has reached a terminal state, rather than
+    an archive task on `one_failed`. `one_failed` fires as soon as ANY upstream
+    fails, without waiting for the others, so a gate failure could archive the
+    version while the adoption branch - which has no upstream and runs in
+    parallel - was still computing. Adoption then wrote its report into a
+    directory that had already been moved, and nobody ever saw it.
+
+    Idempotent because Airflow retries tasks: if CURRENT already names this run
+    there is nothing to publish, and if the version has already been archived
+    there is nothing to move.
+    """
+    version = _version_root(cfg) / run_id
+    if current_run_id(cfg) == run_id:
+        return "noop"  # already published - this is a retry
+    if not version.is_dir():
+        return "noop"  # already archived - this is a retry
+    if (version / PUBLISHED_MARKER).exists():
+        publish_version(cfg, run_id)
+        return "published"
+    keep_failed_reports(cfg, run_id)
+    return "failed"
+
+
+def prune_report_versions(cfg: dict, keep: int = 5) -> list[str]:
+    """Keep the newest `keep` versions, plus whatever CURRENT names.
+
+    One directory per run is unbounded otherwise. CURRENT is protected
+    explicitly rather than by assuming it is the newest - a run that fails
+    after a successful one leaves a newer directory that is not published.
+    """
+    root = _version_root(cfg)
+    if not root.is_dir():
+        return []
+    protected = {current_run_id(cfg)}
+    versions = sorted(
+        (d for d in root.iterdir() if d.is_dir()),
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    removed = []
+    for d in versions[keep:]:
+        if d.name in protected:
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        removed.append(d.name)
+    return removed
 
 
 def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
@@ -776,6 +938,7 @@ def write_run_metrics(
     adoption_headline: pd.DataFrame,
     runtime_seconds: float,
     dest: Path | None = None,
+    run_id: str | None = None,
 ) -> dict:
     """Assemble and write reports/run_metrics.json.
 
@@ -788,6 +951,8 @@ def write_run_metrics(
     exact failure mode the digest below exists to prevent.
     """
     metrics = {
+        # First, so the version this file describes is the first thing read.
+        "run_id": run_id,
         "rows_source": n_raw,
         "rows_quarantined": n_quarantined,
         "quarantine_rate_pct": round(100 * n_quarantined / n_raw, 2) if n_raw else 0.0,
@@ -830,26 +995,35 @@ def run(config_path: str | None = None) -> dict:
     # writes into this run's staging directory; reports/ is only touched once
     # load() has committed. See reports_dir().
     run_id = f"local_{datetime.now(timezone.utc):%Y%m%dT%H%M%S%f}"
-    staged = reports_dir(cfg, run_id)
+    version = reports_dir(cfg, run_id)
     try:
         log.info("--- 1/5 extract")
         raw = extract(cfg)
         log.info("--- 2/5 data quality")
-        clean, quarantine, results = check_quality(raw, cfg, reports_dest=staged)
+        clean, quarantine, results = check_quality(
+            raw, cfg, reports_dest=version, run_id=run_id
+        )
         write_quality_report(
-            results, cfg, len(raw), len(clean), len(quarantine), dest=staged
+            results,
+            cfg,
+            len(raw),
+            len(clean),
+            len(quarantine),
+            dest=version,
+            run_id=run_id,
         )
         log.info("--- 3/5 transform")
         tables = transform(clean)
         log.info("--- 4/5 recommend")
         recs = recommend(tables, cfg)
         log.info("--- 5/5 adoption")
-        adoption = measure_adoption(cfg, reports_dest=staged)
+        adoption = measure_adoption(cfg, reports_dest=version, run_id=run_id)
 
         load(
             {**tables, "quarantine": quarantine, "recommendations": recs, **adoption},
             cfg,
         )
+        mark_published(cfg, run_id)
 
         metrics = write_run_metrics(
             cfg,
@@ -860,17 +1034,21 @@ def run(config_path: str | None = None) -> dict:
             recs=recs,
             adoption_headline=adoption["adoption_headline"],
             runtime_seconds=time.perf_counter() - started,
-            dest=staged,
+            dest=version,
+            run_id=run_id,
         )
     except BaseException:
-        # Whatever was computed before the failure is still worth reading, so it
-        # is parked under reports/failed_runs/ - never over the report that
-        # describes the data currently in the warehouse.
+        # Whatever was computed before the failure is still worth reading, so
+        # the version is parked under reports/failed_runs/ - it never becomes
+        # something CURRENT can name.
         keep_failed_reports(cfg, run_id)
         shutil.rmtree(cfg["paths"]["staging"] / run_id, ignore_errors=True)
         raise
 
-    promote_reports(cfg, run_id)
+    # The load committed and the version is complete, so it becomes the
+    # published one - a single atomic write to reports/CURRENT.
+    publish_version(cfg, run_id)
+    prune_report_versions(cfg)
     shutil.rmtree(cfg["paths"]["staging"] / run_id, ignore_errors=True)
     log.info("Done in %.1fs", metrics["runtime_seconds"])
     return metrics

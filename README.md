@@ -12,7 +12,7 @@ measurement wired into the pipeline itself.
 pip install -r requirements.txt
 python scripts/get_data.py           # ~45 MB of transactions + usage telemetry
 python -m retail_pipeline.pipeline   # ~12 s end to end
-pytest -q                            # 26 tests
+pytest -q
 ```
 
 ## Results from a full run
@@ -47,7 +47,9 @@ calendar built for time intelligence, a second fact table for data quality
 joined on conformed dimensions, a many-to-many bridge for the quality rules, a
 35-measure DAX library and dynamic row-level security over an entitlement table.
 
-![Power BI model view](bi/screenshots/model-view.png)
+![Power BI sales overview](bi/screenshots/page1-sales.png)
+
+Three report pages and the model view: [`bi/README.md`](bi/README.md).
 
 Reconciles to £10,247,353.28 over 19,773 orders, and 522,566 loaded + 19,343
 rejected = 541,909 — the source row count.
@@ -61,24 +63,50 @@ Build it yourself in ~45 minutes: [`bi/BUILD_POWERBI.md`](bi/BUILD_POWERBI.md).
 extract → data quality → star schema → load → recommend → adoption
 ```
 
-Three modules, scheduled as nine Airflow tasks
+Three modules, scheduled as ten Airflow tasks
 ([`dags/`](dags/retail_pipeline_dag.py)) so a failure names the stage that broke.
 Every stage computes into per-run staging; a single `publish` task is the only
 thing that writes to the warehouse.
+
+**Scope: a single-machine Airflow, `LocalExecutor` or `SequentialExecutor`.**
+Staging, the warehouse and the reports are all local `pathlib` paths written
+with `os.replace()` and `sqlite3.connect()`. That is a deliberate choice for a
+portfolio project, and it is a real constraint rather than a detail: under
+CeleryExecutor or KubernetesExecutor each task can land on a different worker,
+where the Parquet an upstream task wrote is simply not there, and neither a
+blob URI nor a network path is something `Path.mkdir()` or SQLite will accept.
+Running this distributed means moving staging and the report versions onto
+object storage (fsspec) and the warehouse onto a shared database — the stage
+functions would not change, but every path in `config.yaml` would. Adding that
+here would be cloud infrastructure in service of a demo.
 
 **The guarantee, stated precisely.** SQLite is swapped in one transaction —
 tables built as `<name>__new`, then dropped, renamed and indexed inside a single
 `BEGIN IMMEDIATE`, so a failure anywhere in that leaves the whole database on
 the previous run. No Parquet file is moved into the published directory until
 that transaction has committed, and a failure before it deletes the staged
-files. The three files in `reports/` are staged and promoted with it, so
-`reports/` always describes the data the warehouse actually holds; a run that
-fails leaves its diagnostics in `reports/failed_runs/<run_id>/` rather than on
-top of the last good report. What is *not* covered is a crash inside the final
-rename loop itself, which can leave a mixed Parquet set; that window is the several `os.replace`
-calls at the very end and nothing in a single-process design closes it entirely.
-Making it a genuine all-or-nothing across both layers needs a versioned output
-directory and a pointer swap, which this project does not do.
+files.
+
+**Reports are versioned, and published by a pointer.** Every run writes its
+three reports into `reports/runs/<run_id>/`, all three built from the same
+staged tables, and `reports/CURRENT` — a one-line file replaced with a single
+`os.replace` — names the version a reader should read. Promoting three files
+one at a time was not good enough: three `os.replace` calls can half-succeed,
+and on Windows they routinely do, because replacing a file another process
+holds open raises `PermissionError`. That left one new report beside two old
+ones with nothing recording it. A version is complete before anything points at
+it, so `reports/CURRENT` names last night's version or tonight's, never a
+mixture. A run that fails is archived to `reports/failed_runs/<run_id>/` and
+never becomes current. (The three files at the top of `reports/` are a copy of
+the current version, committed so a reader does not have to clone and run the
+pipeline; each one names its `run_id`.)
+
+What is *not* covered is the Parquet layer, which still promotes file by file:
+a crash inside that final rename loop can leave a mixed set. It is the same
+problem the reports had, and it has the same fix — a versioned output directory
+named by a pointer — which the warehouse does not yet do, because the Power BI
+model and every `data/processed/*.parquet` path in the repo point straight at
+that directory. SQLite is unaffected: it swaps in one transaction.
 
 **Data quality (9 rules, 4 dimensions).** Cancellations, non-positive quantities
 and prices, duplicates, price outliers and non-product stock codes are
@@ -145,7 +173,7 @@ recommendation. That is not modesty; it is the only way the rest gets believed.
 
 ## Tests
 
-26 tests, concentrated on the failures that are *silent*: a quality rule that
+The suite is concentrated on the failures that are *silent*: a quality rule that
 stops firing, a team that drops out of the adoption report, a week with no
 activity that closes the gap and shifts every later week's label, a metric with
 no data reported as a zero. Nothing crashes when those regress — bad rows just
@@ -153,8 +181,12 @@ start flowing into the warehouse, which is why the tests exist.
 
 ## Stack
 
-Python · pandas · scikit-learn · Parquet · SQLite (a stand-in for Azure SQL —
-swapping it is a connection string) · Airflow · Git. All thresholds and the team
+Python · pandas · scikit-learn · Parquet · SQLite · Airflow (single machine,
+see above) · Git. SQLite stands in for a served warehouse such as Azure SQL:
+the star schema and the DAX over it would carry across unchanged, but the load
+path itself would not — `BEGIN IMMEDIATE`, `ALTER TABLE ... RENAME` and the
+local-filesystem Parquet swap are SQLite-and-one-host specific, so it is a
+rewrite of `load()`, not a connection string. All thresholds and the team
 roster live in `config.yaml`; there are no magic numbers in the code.
 
 ---

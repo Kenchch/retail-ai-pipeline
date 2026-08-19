@@ -1,4 +1,5 @@
 {
+  "run_id": "local_20260819T085501336588",
   "rows_source": 541909,
   "rows_quarantined": 19343,
   "quarantine_rate_pct": 3.57,
@@ -29,5 +30,5 @@
       ]
     }
   },
-  "runtime_seconds": 13.1
+  "runtime_seconds": 12.7
 }

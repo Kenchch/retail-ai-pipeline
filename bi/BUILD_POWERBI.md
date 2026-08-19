@@ -3,8 +3,8 @@
 About 45 minutes, plus a few minutes to generate the model CSVs.
 
 `model/*.csv` is build output and is **not** in the repo — `.gitignore` keeps
-22 MB of regenerated-every-run files out of git. Two commands produce them, and
-they are the first step below. Everything after that is Power BI Desktop only.
+22 MB of regenerated-every-run files out of git. Three commands produce them
+from a fresh clone, and they are the first step below. Everything after that is Power BI Desktop only.
 
 Work through it in order; relationships before measures, measures before
 visuals. Every step ends with something you can check, and the numbers to check
@@ -381,7 +381,7 @@ same file ignores the folder's build output.
 
 `model/` and `*.pbix` stay out of git on purpose (see `bi/.gitignore`) — 22 MB
 of build output that changes wholesale on every run is the worst possible shape
-for a git object, and §12 reproduces it in one command.
+for a git object, and §12 regenerates it.
 
 - If you publish to the Power BI service, publish to a workspace you can share
   a link to, and re-test the RLS roles there — Desktop's "View as" and the

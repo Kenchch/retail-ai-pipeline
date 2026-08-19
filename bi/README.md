@@ -8,6 +8,10 @@ a many-to-many bridge, a 35-measure DAX library and dynamic row-level security.
 Two fact tables on conformed dimensions, so one set of slicers answers both
 *what sold* and *what we rejected and why*.
 
+![Sales overview](screenshots/page1-sales.png)
+
+The model behind it — two fact tables sharing every dimension:
+
 ![Model view](screenshots/model-view.png)
 
 ```
@@ -40,9 +44,11 @@ source file and the report.
 
 The nine model CSVs are **build output and are not committed** — `fact_sales.csv`
 alone is 21 MB and is rewritten wholesale on every run, which is the worst
-possible shape for a git object. Reproduce them in two commands:
+possible shape for a git object. Reproduce them from a fresh clone in three
+commands:
 
 ```bash
+python scripts/get_data.py           # ~45 MB source extract into data/raw
 python -m retail_pipeline.pipeline   # produces data/processed/*.parquet
 python -m bi.build_star_schema       # produces bi/model/*.csv
 ```

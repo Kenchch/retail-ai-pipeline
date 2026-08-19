@@ -8,23 +8,27 @@ tests exist.
 """
 
 import os
+import pathlib
 
 import pandas as pd
 import pytest
 
 from retail_pipeline import adoption as adoption_mod
+from retail_pipeline import pipeline as P
 from retail_pipeline.adoption import headline_metrics, team_metrics, weekly_metrics
 from retail_pipeline.pipeline import (
     CHECKS,
+    REPORT_NAMES,
     _input_fingerprint,
     check_quality,
+    current_run_id,
     extract,
-    keep_failed_reports,
+    finalize_reports,
     load_config,
-    promote_reports,
+    mark_published,
+    published_reports,
     reports_dir,
     transform,
-    write_quality_report,
 )
 from retail_pipeline.recommend import COLUMNS, recommend
 
@@ -253,60 +257,182 @@ def _staged_cfg(cfg, tmp_path):
     return cfg
 
 
-LAST_GOOD = "# last good run\n"
+def _fill_version(cfg, run_id, marker="v"):
+    """A complete report version: all three files, none of them published."""
+    version = reports_dir(cfg, run_id)
+    for name in REPORT_NAMES:
+        (version / name).write_text(f"{marker} {name}\n", encoding="utf-8")
+    return version
 
 
-def test_reports_are_published_with_the_data_not_before(sample, cfg, tmp_path):
+def test_a_version_is_published_by_one_atomic_write(cfg, tmp_path):
     """reports/ describes what is IN the warehouse.
 
     Every report used to be written straight to reports/ by the task that
-    computed it, and every one of those tasks runs before `publish`. A run that
-    computed its reports and then failed to publish therefore left last night's
-    warehouse beside tonight's reports - numbers no query could reproduce, with
-    nothing in either file saying so. Reports are staged with the data and
-    promoted by the same step that commits it.
+    computed it, and every one of those tasks runs before `publish`, so a run
+    that failed to publish left last night's warehouse beside tonight's
+    reports.
+
+    Staging them and moving them across afterwards was not enough: three
+    separate os.replace() calls can half-succeed, and on Windows they routinely
+    do - replacing a file another process holds open raises PermissionError,
+    which leaves one new report beside two old ones. A version is therefore a
+    directory, and publishing it changes exactly one file.
     """
     cfg = _staged_cfg(cfg, tmp_path)
-    published = cfg["paths"]["reports"] / "data_quality_report.md"
-    published.write_text(LAST_GOOD, encoding="utf-8")
+    _fill_version(cfg, "run_a", marker="old")
+    P.publish_version(cfg, "run_a")
+    _fill_version(cfg, "run_b", marker="new")
 
-    clean, quarantine, results = check_quality(sample, cfg)
-    staged = reports_dir(cfg, "run_a")
-    write_quality_report(
-        results, cfg, len(sample), len(clean), len(quarantine), dest=staged
-    )
+    # Built, not published. The pointer has not moved, so a reader still sees
+    # the version whose data is in the warehouse.
+    assert current_run_id(cfg) == "run_a"
+    assert published_reports(cfg).name == "run_a"
 
-    # Computed, but not published: the warehouse has not moved, so neither has
-    # the report describing it.
-    assert (staged / "data_quality_report.md").exists()
-    assert published.read_text(encoding="utf-8") == LAST_GOOD
-
-    # ... and then the publish fails.
-    parked = keep_failed_reports(cfg, "run_a")
-    assert published.read_text(encoding="utf-8") == LAST_GOOD
-    assert parked == cfg["paths"]["reports"] / "failed_runs" / "run_a"
-    assert "Data quality report" in (parked / "data_quality_report.md").read_text(
-        encoding="utf-8"
-    )
+    P.publish_version(cfg, "run_b")
+    assert current_run_id(cfg) == "run_b"
+    for name in REPORT_NAMES:
+        assert (
+            (published_reports(cfg) / name)
+            .read_text(encoding="utf-8")
+            .startswith("new")
+        )
 
 
-def test_a_successful_publish_promotes_the_staged_reports(sample, cfg, tmp_path):
-    """The other half of the same guarantee: when load() does commit, the new
-    reports must actually replace the old ones - staging is only safe if
-    promotion afterwards is unconditional."""
+def test_an_incomplete_version_is_refused(cfg, tmp_path):
+    """Pointing at a version before it is complete is the exact failure the
+    pointer exists to prevent, so it is refused rather than published."""
     cfg = _staged_cfg(cfg, tmp_path)
-    published = cfg["paths"]["reports"] / "data_quality_report.md"
-    published.write_text(LAST_GOOD, encoding="utf-8")
+    _fill_version(cfg, "run_a", marker="old")
+    P.publish_version(cfg, "run_a")
 
-    clean, quarantine, results = check_quality(sample, cfg)
-    staged = reports_dir(cfg, "run_b")
-    write_quality_report(
-        results, cfg, len(sample), len(clean), len(quarantine), dest=staged
-    )
+    version = reports_dir(cfg, "run_b")
+    (version / "data_quality_report.md").write_text("partial", encoding="utf-8")
 
-    assert promote_reports(cfg, "run_b") == ["data_quality_report.md"]
-    assert "last good run" not in published.read_text(encoding="utf-8")
-    assert not list(staged.iterdir())  # moved, not copied
+    with pytest.raises(FileNotFoundError, match="adoption_report.md"):
+        P.publish_version(cfg, "run_b")
+    assert current_run_id(cfg) == "run_a"
+
+
+def test_a_failed_snapshot_copy_does_not_unpublish_the_version(
+    cfg, tmp_path, monkeypatch
+):
+    """FAULT INJECTION: the second convenience copy fails.
+
+    The top-level reports/*.md files are a convenience for GitHub readers, and
+    copying them is three separate writes - exactly the operation that used to
+    be the publish itself, and exactly the one that can half-succeed. It is now
+    downstream of the pointer, so a failure there leaves the published version
+    correct and complete; only the copies lag, and each report names its own
+    run_id so the lag is visible rather than silent.
+    """
+    cfg = _staged_cfg(cfg, tmp_path)
+    _fill_version(cfg, "run_b", marker="new")
+
+    calls = []
+    real = P.shutil.copyfile
+
+    def flaky(src, dst):
+        calls.append(pathlib.Path(dst).name)
+        if len(calls) == 2:
+            raise PermissionError("another process has this file open")
+        return real(src, dst)
+
+    monkeypatch.setattr(P.shutil, "copyfile", flaky)
+
+    P.publish_version(cfg, "run_b")
+
+    assert current_run_id(cfg) == "run_b"
+    assert len(calls) == len(REPORT_NAMES), "the copy loop stopped at the failure"
+    for name in REPORT_NAMES:
+        assert (published_reports(cfg) / name).exists()
+
+
+def test_a_failed_publish_leaves_the_previous_version_current(cfg, tmp_path):
+    """FAULT INJECTION: the metrics file is never produced, so the version is
+    never complete and the run never publishes. The previous version has to
+    stay current, in full."""
+    cfg = _staged_cfg(cfg, tmp_path)
+    _fill_version(cfg, "run_a", marker="old")
+    P.publish_version(cfg, "run_a")
+
+    version = reports_dir(cfg, "run_b")
+    (version / "data_quality_report.md").write_text("new", encoding="utf-8")
+    (version / "adoption_report.md").write_text("new", encoding="utf-8")
+    # run_metrics.json missing: write_run_metrics raised.
+
+    assert finalize_reports(cfg, "run_b") == "failed"
+    assert current_run_id(cfg) == "run_a"
+    for name in REPORT_NAMES:
+        assert (
+            (published_reports(cfg) / name)
+            .read_text(encoding="utf-8")
+            .startswith("old")
+        )
+    parked = cfg["paths"]["reports"] / "failed_runs" / "run_b"
+    assert (parked / "data_quality_report.md").exists()
+
+
+def test_the_finaliser_waits_rather_than_racing_the_adoption_branch(cfg, tmp_path):
+    """FAULT INJECTION: the gate fails first, adoption finishes afterwards.
+
+    The archiver used to run on `one_failed`, which fires as soon as ANY
+    upstream fails without waiting for the others. measure_adoption is a root
+    task with no upstream, so it runs in parallel with the gate: the archive
+    moved the version out from under it, and the adoption report it then wrote
+    was never seen again.
+
+    Here both writers finish before the finaliser is called - which is what
+    all_done buys - and both reports end up in the same archived version.
+    """
+    cfg = _staged_cfg(cfg, tmp_path)
+    version = reports_dir(cfg, "run_b")
+    (version / "data_quality_report.md").write_text("GATE FAILED", encoding="utf-8")
+    (version / "adoption_report.md").write_text("adoption, later", encoding="utf-8")
+
+    assert finalize_reports(cfg, "run_b") == "failed"
+
+    parked = cfg["paths"]["reports"] / "failed_runs" / "run_b"
+    assert sorted(p.name for p in parked.iterdir()) == [
+        "adoption_report.md",
+        "data_quality_report.md",
+    ]
+
+
+def test_the_finaliser_is_idempotent(cfg, tmp_path):
+    """Airflow retries tasks, so running this twice must not undo the first
+    run - neither by re-archiving a published version nor by failing on one
+    that is already gone."""
+    cfg = _staged_cfg(cfg, tmp_path)
+
+    _fill_version(cfg, "run_ok")
+    mark_published(cfg, "run_ok")
+    assert finalize_reports(cfg, "run_ok") == "published"
+    assert finalize_reports(cfg, "run_ok") == "noop"
+    assert current_run_id(cfg) == "run_ok"
+
+    _fill_version(cfg, "run_bad")
+    assert finalize_reports(cfg, "run_bad") == "failed"
+    assert finalize_reports(cfg, "run_bad") == "noop"
+    assert current_run_id(cfg) == "run_ok", "a retry unpublished the good version"
+
+
+def test_pruning_never_removes_the_published_version(cfg, tmp_path):
+    """A run that fails after a successful one leaves a NEWER directory that is
+    not published, so "keep the newest" is not the same as "keep the current
+    one"."""
+    cfg = _staged_cfg(cfg, tmp_path)
+    _fill_version(cfg, "run_00")
+    mark_published(cfg, "run_00")
+    finalize_reports(cfg, "run_00")
+    for i in range(1, 9):
+        _fill_version(cfg, f"run_{i:02d}")
+
+    P.prune_report_versions(cfg, keep=3)
+
+    assert current_run_id(cfg) == "run_00"
+    assert published_reports(cfg) is not None
+    assert (published_reports(cfg) / "run_metrics.json").exists()
 
 
 def test_a_failed_gate_does_not_overwrite_the_published_report(sample, cfg, tmp_path):
@@ -315,24 +441,28 @@ def test_a_failed_gate_does_not_overwrite_the_published_report(sample, cfg, tmp_
     check_quality writes "GATE FAILED - NOTHING WAS PUBLISHED" before raising.
     Written into reports/, that sentence lands on top of the report describing
     the data the warehouse still holds and still serves, telling every reader
-    the current contents were rejected - the reverse of what happened. It
-    belongs with the failed run.
+    the current contents were rejected - the reverse of what happened.
     """
     cfg = _staged_cfg(cfg, tmp_path)
+    _fill_version(cfg, "run_a", marker="old")
+    P.publish_version(cfg, "run_a")
+
     cfg["quality"]["max_quarantine_rate"] = 0.01
-    published = cfg["paths"]["reports"] / "data_quality_report.md"
-    published.write_text(LAST_GOOD, encoding="utf-8")
-
-    staged = reports_dir(cfg, "run_c")
+    version = reports_dir(cfg, "run_b")
     with pytest.raises(ValueError, match="refusing to load"):
-        check_quality(sample, cfg, reports_dest=staged)
+        check_quality(sample, cfg, reports_dest=version, run_id="run_b")
 
-    assert published.read_text(encoding="utf-8") == LAST_GOOD
-    parked = keep_failed_reports(cfg, "run_c")
-    assert "GATE FAILED" in (parked / "data_quality_report.md").read_text(
-        encoding="utf-8"
-    )
-    assert published.read_text(encoding="utf-8") == LAST_GOOD
+    assert current_run_id(cfg) == "run_a"
+    assert "GATE FAILED" not in (
+        published_reports(cfg) / "data_quality_report.md"
+    ).read_text(encoding="utf-8")
+
+    assert finalize_reports(cfg, "run_b") == "failed"
+    parked = cfg["paths"]["reports"] / "failed_runs" / "run_b"
+    text = (parked / "data_quality_report.md").read_text(encoding="utf-8")
+    assert "GATE FAILED" in text
+    assert "run_id: run_b" in text  # the version says which run it describes
+    assert current_run_id(cfg) == "run_a"
 
 
 # --- star schema ----------------------------------------------------------- #
