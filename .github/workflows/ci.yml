@@ -41,3 +41,48 @@ jobs:
 
       - name: Audit dependencies
         run: pip-audit -r requirements.txt --strict
+
+  dag:
+    # Airflow is deliberately NOT in requirements.txt: dags/ is only read by a
+    # scheduler and nothing else in the repo imports it. But that meant the DAG
+    # had never been executed by anything, and every bug it has carried has
+    # been a wiring bug - a split publish holding two runs in the warehouse, an
+    # all_done cleanup deleting the files needed to re-run the gate, a
+    # one_failed archiver racing a parallel branch, and leaves that reported a
+    # failed run as a success. None of those show up in a unit test of a stage
+    # function; all of them show up in the trigger rules and the edges.
+    #
+    # Its own job, on one Python version, so the heavy install does not
+    # multiply across the matrix above.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # Constraints file pinned to the Airflow release: installing Airflow
+      # without one resolves a different dependency set every week and the job
+      # fails for reasons that have nothing to do with this repo.
+      - name: Install Airflow
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "apache-airflow==2.10.5" \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-3.11.txt"
+
+      - name: The DAG loads and is wired correctly
+        run: pytest -q tests/test_dag.py
+
+      # A skip here would be silent: pytest.importorskip means the file passes
+      # by not running, so the job could go green having tested nothing. This
+      # is what proves the install above actually took.
+      - name: The DAG tests actually ran
+        run: |
+          out=$(pytest -q tests/test_dag.py --collect-only 2>&1)
+          echo "$out" | tail -3
+          echo "$out" | grep -q "skipped" \
+            && { echo "the DAG tests skipped - Airflow did not import"; exit 1; }
+          exit 0

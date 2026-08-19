@@ -76,6 +76,12 @@ Three modules, scheduled as ten Airflow tasks
 Every stage computes into per-run staging; a single `publish` task is the only
 thing that writes to the warehouse.
 
+The DAG's wiring is tested — `tests/test_dag.py` asserts the trigger rules and
+the edges, because every bug it has carried has been a wiring bug rather than a
+logic one, and none of those show up in a unit test of a stage function.
+Airflow is not in `requirements.txt` (nothing but `dags/` imports it), so those
+tests skip locally and CI installs it in a job of its own.
+
 **Scope: a single-machine Airflow, `LocalExecutor` or `SequentialExecutor`.**
 Staging, the warehouse and the reports are all local `pathlib` paths written
 with `os.replace()` and `sqlite3.connect()`. That is a deliberate choice for a

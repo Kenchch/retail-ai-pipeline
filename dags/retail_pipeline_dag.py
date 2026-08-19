@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pandas as pd
 from airflow import DAG
+from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -305,6 +306,33 @@ def task_clear_staging(**context):
     shutil.rmtree(d, ignore_errors=True)
 
 
+def task_watcher(**context):
+    """Fail the DAG run when anything in it failed.
+
+    Airflow decides a run's state from its LEAF tasks. Both leaves here run on
+    `all_done` - the report finaliser has to, or a failed run's diagnostics are
+    never archived, and the staging pruner has to, or old hand-off directories
+    accumulate forever. Both then succeed on a failed run, so every leaf is
+    green and the run was marked SUCCESS with a failed quality gate inside it.
+    Nothing in the UI, and nothing in an alert wired to run state, would have
+    said otherwise.
+
+    This is Airflow's own watcher pattern for exactly that situation:
+    `one_failed` against every other task, so it is SKIPPED on a clean run and
+    becomes the failing leaf on a dirty one. It deliberately does no work -
+    raising is the whole job, and anything else it did would be work that only
+    happens on failures.
+    """
+    failed = [
+        ti.task_id
+        for ti in context["dag_run"].get_task_instances()
+        if ti.state == "failed"
+    ]
+    raise AirflowException(
+        "DAG run failed: " + (", ".join(sorted(failed)) or "an upstream task failed")
+    )
+
+
 def task_prune_staging(**_):
     """Age-based cleanup, on `all_done`, so a failed run still leaves its own
     hand-off files behind for long enough to be re-run from."""
@@ -360,6 +388,11 @@ with DAG(
         python_callable=task_prune_staging,
         trigger_rule="all_done",
     )
+    watcher = PythonOperator(
+        task_id="watcher",
+        python_callable=task_watcher,
+        trigger_rule="one_failed",
+    )
 
     # Everything upstream of `publish` computes into per-run staging and touches
     # nothing a reader can see. `publish` is the only writer, so the warehouse
@@ -381,3 +414,11 @@ with DAG(
     # succeeded or not, and only once they are all finished - which is the
     # guarantee `one_failed` could not give.
     [t2, t5, t7, t6] >> t10
+
+    # Every other task feeds the watcher. Built from dag.tasks rather than
+    # listed by hand, because a list is something a future task can be left out
+    # of - and a task missing from here is a failure the run reports as
+    # success, which is the failure mode this exists to close.
+    for task in dag.tasks:
+        if task.task_id != "watcher":
+            task >> watcher
