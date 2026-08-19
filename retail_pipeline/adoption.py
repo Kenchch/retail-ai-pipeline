@@ -20,6 +20,7 @@ function that never came along - and that team is the next piece of work.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pandas as pd
 
@@ -297,6 +298,7 @@ def write_report(
     teams: pd.DataFrame,
     cfg: dict,
     as_of: pd.Timestamp | None = None,
+    dest: Path | None = None,
 ) -> None:
     def cell(v):
         return "&ndash;" if v is None or pd.isna(v) else v
@@ -360,12 +362,16 @@ def write_report(
             "shows &ndash;, never 0 - the two mean different things."
         ),
     ]
-    (cfg["paths"]["reports"] / "adoption_report.md").write_text(
+    out_dir = dest or cfg["paths"]["reports"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "adoption_report.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
 
 
-def measure_adoption(cfg: dict) -> dict[str, pd.DataFrame]:
+def measure_adoption(
+    cfg: dict, reports_dest: Path | None = None
+) -> dict[str, pd.DataFrame]:
     events = load_events(cfg)
     # Resolved once and shared, so the three tables cannot disagree about which
     # day "the last four weeks" ends on.
@@ -373,7 +379,7 @@ def measure_adoption(cfg: dict) -> dict[str, pd.DataFrame]:
     headline = headline_metrics(events, cfg, as_of)
     weekly = weekly_metrics(events, cfg, as_of)
     teams = team_metrics(events, cfg, as_of)
-    write_report(headline, weekly, teams, cfg, as_of)
+    write_report(headline, weekly, teams, cfg, as_of, dest=reports_dest)
     return {
         "adoption_headline": headline,
         "adoption_weekly": weekly,

@@ -71,8 +71,11 @@ tables built as `<name>__new`, then dropped, renamed and indexed inside a single
 `BEGIN IMMEDIATE`, so a failure anywhere in that leaves the whole database on
 the previous run. No Parquet file is moved into the published directory until
 that transaction has committed, and a failure before it deletes the staged
-files. What is *not* covered is a crash inside the final rename loop itself,
-which can leave a mixed Parquet set; that window is the several `os.replace`
+files. The three files in `reports/` are staged and promoted with it, so
+`reports/` always describes the data the warehouse actually holds; a run that
+fails leaves its diagnostics in `reports/failed_runs/<run_id>/` rather than on
+top of the last good report. What is *not* covered is a crash inside the final
+rename loop itself, which can leave a mixed Parquet set; that window is the several `os.replace`
 calls at the very end and nothing in a single-process design closes it entirely.
 Making it a genuine all-or-nothing across both layers needs a versioned output
 directory and a pointer swap, which this project does not do.
