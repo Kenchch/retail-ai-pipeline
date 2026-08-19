@@ -7,12 +7,23 @@ licensed under MIT (see LICENSE).
 Source dataset
 --------------
 
-UCI Machine Learning Repository, "Online Retail" (Chen, D., 2015).
-https://archive.ics.uci.edu/dataset/352/online+retail
+  Online Retail
+  Chen, D. (2015). UCI Machine Learning Repository.
+  DOI: 10.24432/C5BW33   https://doi.org/10.24432/C5BW33
+  Licence: Creative Commons Attribution 4.0 International (CC BY 4.0)
 
-The dataset is not redistributed here and is separately licensed. It is
-downloaded by scripts/get_data.py at build time; see the link above for
-its terms.
+The dataset is not redistributed in this repository. scripts/get_data.py
+downloads it at build time into data/raw/, which .gitignore keeps out of
+git.
+
+What this project does with it, so the attribution is accurate about what
+was changed: rows are filtered against nine quality rules (cancellations,
+non-positive quantity or price, duplicates, price outliers, non-product
+stock codes), the survivors are reshaped into a star schema with a derived
+continuous calendar and surrogate keys, and the invoice lines are
+aggregated into baskets for the market-basket model. The published tables
+and every figure in reports/ are therefore derived from the dataset, not
+copies of it.
 
 This file exists because the note used to sit at the bottom of LICENSE,
 which stopped GitHub's licence detector recognising the text as MIT - the
