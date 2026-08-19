@@ -42,14 +42,13 @@ Anywhere else works for building — §1 makes the path a parameter, so nothing 
 the model is tied to a location. Inside the repo is where it needs to be for
 §13's commit, and for §12 if you ever regenerate.
 
-> **Do not run the Python build.** The CSVs in `model/` are already generated and
-> still current: the repo's own `reports/run_metrics.json` reports 541,909 rows
-> read · 19,343 quarantined (3.57%) · 522,566 loaded · 3,803 products · 17,083
-> recommendations, and every one of those matches the CSVs shipped here. The
-> pipeline has had commits since these were built — the most recent hardens the
-> SQLite load path — but none of them change the published numbers or the shape
-> of `data/processed/*.parquet` that the model is derived from. See
-> [§12](#12-if-you-ever-do-need-to-regenerate).
+`model/` is build output and is not in git (see `bi/.gitignore`) — 22 MB that
+changes wholesale on every run is the worst possible shape for a git object —
+so the three commands above are how those CSVs come to exist on your machine.
+They reconcile to the figures in the repo's own
+[`reports/run_metrics.json`](../reports/run_metrics.json): 541,909 rows read,
+19,343 quarantined (3.57%), 522,566 loaded, 3,803 products, 17,083
+recommendations.
 
 ## 1. Create the folder parameter first
 
@@ -63,7 +62,7 @@ machine — the reason you are reading this version of the document.
 | Name | `ModelFolder` |
 | Type | Text |
 | Suggested values | Any value |
-| Current value | `D:\projects\retail-ai-pipeline\bi\model` |
+| Current value | the full path to `bi\model` in your clone |
 
 Leave Power Query open; §2 uses it.
 
@@ -327,7 +326,7 @@ Only when the source data or the pipeline changes. Verified against the repo as
 it stands on GitHub today:
 
 ```powershell
-cd D:\projects\retail-ai-pipeline
+cd <your clone of retail-ai-pipeline>
 git pull
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -335,7 +334,7 @@ pip install -r requirements.txt      # pandas, numpy, pyarrow, scikit-learn, PyY
 python scripts\get_data.py           # ~45 MB into data\raw - not in git
 python -m retail_pipeline.pipeline   # ~12 s; writes data\processed\*.parquet
                                      # and data\warehouse\retail.db
-pytest -q                            # 13 tests
+pytest -q                            # green before regenerating
 python -m bi.build_star_schema       # rewrites bi\model\*.csv
 ```
 
@@ -359,7 +358,7 @@ Then in Power BI Desktop: **Home → Refresh**. Because the queries read through
 
 ## 13. Before you show it to anyone
 
-- Save as `RetailSales.pbix` in `D:\projects\retail-ai-pipeline\bi\`.
+- Save as `RetailSales.pbix` in the repo's `bi\` folder.
 - Screenshot all three pages plus the Model view diagram, into `bi\screenshots\`.
   **The model diagram is the screenshot that gets you the interview**; the
   dashboard is the one that gets skimmed.
@@ -368,7 +367,7 @@ Then in Power BI Desktop: **Home → Refresh**. Because the queries read through
 - Commit and push:
 
 ```powershell
-cd D:\projects\retail-ai-pipeline
+cd <your clone of retail-ai-pipeline>
 git add bi/
 git add -f bi/screenshots/*.png
 git status                # confirm model/ and *.pbix are NOT staged
@@ -376,10 +375,9 @@ git commit -m "Add Power BI semantic layer: model, measures, RLS, build guide"
 git push
 ```
 
-This is the **first time `bi/` appears on GitHub** — the folder has only ever
-existed locally. Check `git status` before committing: `bi/.gitignore` should be
-keeping `model/` (22 MB) and `RetailSales.pbix` out, and the screenshots need
-`-f` because that same file ignores the folder's build output.
+Check `git status` before committing: `bi/.gitignore` should be keeping `model/`
+(22 MB) and `RetailSales.pbix` out, and the screenshots need `-f` because that
+same file ignores the folder's build output.
 
 `model/` and `*.pbix` stay out of git on purpose (see `bi/.gitignore`) — 22 MB
 of build output that changes wholesale on every run is the worst possible shape
