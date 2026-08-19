@@ -19,6 +19,7 @@ $AIRFLOW_HOME/dags/.
 
 from __future__ import annotations
 
+import shutil
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -34,8 +35,11 @@ from retail_pipeline.adoption import measure_adoption
 from retail_pipeline.pipeline import (
     check_quality,
     extract,
+    keep_failed_reports,
     load,
     load_config,
+    promote_reports,
+    reports_dir,
     transform,
     write_quality_report,
     write_run_metrics,
@@ -90,8 +94,21 @@ def task_quality(**context):
     cfg = load_config()
     run_id = context["run_id"]
     raw = _read_staged(cfg, "raw", run_id, "extract")
-    clean, quarantine, results = check_quality(raw, cfg)  # raises -> DAG stops here
-    write_quality_report(results, cfg, len(raw), len(clean), len(quarantine))
+    staged = reports_dir(cfg, run_id)
+    # raises -> DAG stops here, leaving its GATE FAILED report in staging for
+    # preserve_failed_reports to park under reports/failed_runs/.
+    clean, quarantine, results = check_quality(raw, cfg, reports_dest=staged)
+    # Into this run's staging, not reports/. `publish` promotes it; a run that
+    # never publishes must not overwrite the report describing the data the
+    # warehouse actually holds.
+    write_quality_report(
+        results,
+        cfg,
+        len(raw),
+        len(clean),
+        len(quarantine),
+        dest=staged,
+    )
     clean.to_parquet(_staging(cfg, "clean", run_id), index=False)
     quarantine.to_parquet(_staging(cfg, "quarantine", run_id), index=False)
 
@@ -135,7 +152,9 @@ def task_adoption(**context):
     the second cannot happen."""
     cfg = load_config()
     run_id = context["run_id"]
-    for name, df in measure_adoption(cfg).items():
+    for name, df in measure_adoption(
+        cfg, reports_dest=reports_dir(cfg, run_id)
+    ).items():
         df.to_parquet(_staging(cfg, name, run_id), index=False)
 
 
@@ -181,6 +200,21 @@ def task_publish(**context):
         for n in names
     }
     load(tables, cfg)
+    # Only now do this run's reports become the published ones. Nothing between
+    # the load() commit and here can fail, so the warehouse and reports/ move
+    # together.
+    promote_reports(cfg, run_id)
+
+
+def task_preserve_failed_reports(**context):
+    """Keep a failed run's reports, without publishing them.
+
+    `one_failed`, so it fires whether the gate stopped the run or the publish
+    did. Files land in reports/failed_runs/<run_id>/ - readable by whoever is
+    investigating, invisible to anything reading reports/.
+    """
+    cfg = load_config()
+    keep_failed_reports(cfg, context["run_id"])
 
 
 def task_run_metrics(**_):
@@ -231,10 +265,9 @@ def task_clear_staging(**context):
     """
     cfg = load_config()
     d = cfg["paths"]["staging"] / context["run_id"]
-    if d.exists():
-        for f in d.glob("*.parquet"):
-            f.unlink()
-        d.rmdir()
+    # rmtree, not glob("*.parquet") + rmdir: the run directory also holds a
+    # reports/ subdirectory now, and rmdir on a non-empty directory raises.
+    shutil.rmtree(d, ignore_errors=True)
 
 
 def task_prune_staging(**_):
@@ -247,9 +280,7 @@ def task_prune_staging(**_):
     cutoff = time.time() - STAGING_RETENTION_DAYS * 86400
     for d in root.iterdir():
         if d.is_dir() and d.stat().st_mtime < cutoff:
-            for f in d.glob("*.parquet"):
-                f.unlink()
-            d.rmdir()
+            shutil.rmtree(d, ignore_errors=True)
 
 
 with DAG(
@@ -289,6 +320,11 @@ with DAG(
         python_callable=task_prune_staging,
         trigger_rule="all_done",
     )
+    t_fail = PythonOperator(
+        task_id="preserve_failed_reports",
+        python_callable=task_preserve_failed_reports,
+        trigger_rule="one_failed",
+    )
 
     # Everything upstream of `publish` computes into per-run staging and touches
     # nothing a reader can see. `publish` is the only writer, so the warehouse
@@ -301,3 +337,7 @@ with DAG(
     # all_done but only removes directories older than STAGING_RETENTION_DAYS.
     t1 >> t2 >> t3 >> t4
     [t4, t5] >> t6 >> t7 >> t8 >> t9
+    # A leaf on one_failed: if the gate or the publish stops the run, whatever
+    # reports were staged are moved to reports/failed_runs/ instead of being
+    # promoted or silently pruned.
+    [t2, t5, t6] >> t_fail

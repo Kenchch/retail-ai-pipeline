@@ -16,3 +16,4 @@ reports/*
 !reports/data_quality_report.md
 !reports/adoption_report.md
 !reports/run_metrics.json
+reports/failed_runs/

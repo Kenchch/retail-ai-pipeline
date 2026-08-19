@@ -19,8 +19,12 @@ from retail_pipeline.pipeline import (
     _input_fingerprint,
     check_quality,
     extract,
+    keep_failed_reports,
     load_config,
+    promote_reports,
+    reports_dir,
     transform,
+    write_quality_report,
 )
 from retail_pipeline.recommend import COLUMNS, recommend
 
@@ -229,16 +233,106 @@ def test_a_failed_gate_still_writes_the_quality_report(sample, cfg, tmp_path):
     was the only run that never produced it."""
     cfg["quality"]["max_quarantine_rate"] = 0.01
     cfg["paths"] = dict(cfg["paths"], reports=tmp_path)
-    report = tmp_path / "data_quality_report.md"
-    report.write_text("# stale - from a previous, successful run\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="refusing to load"):
         check_quality(sample, cfg)
 
-    text = report.read_text(encoding="utf-8")
+    text = (tmp_path / "data_quality_report.md").read_text(encoding="utf-8")
     assert "GATE FAILED" in text and "NOTHING WAS PUBLISHED" in text
-    assert "stale" not in text  # it was actually rewritten
     assert "Would have loaded" in text  # not reported as published
+
+
+# --- the publication boundary ---------------------------------------------- #
+
+
+def _staged_cfg(cfg, tmp_path):
+    cfg["paths"] = dict(
+        cfg["paths"], reports=tmp_path / "reports", staging=tmp_path / "staging"
+    )
+    cfg["paths"]["reports"].mkdir(parents=True)
+    return cfg
+
+
+LAST_GOOD = "# last good run\n"
+
+
+def test_reports_are_published_with_the_data_not_before(sample, cfg, tmp_path):
+    """reports/ describes what is IN the warehouse.
+
+    Every report used to be written straight to reports/ by the task that
+    computed it, and every one of those tasks runs before `publish`. A run that
+    computed its reports and then failed to publish therefore left last night's
+    warehouse beside tonight's reports - numbers no query could reproduce, with
+    nothing in either file saying so. Reports are staged with the data and
+    promoted by the same step that commits it.
+    """
+    cfg = _staged_cfg(cfg, tmp_path)
+    published = cfg["paths"]["reports"] / "data_quality_report.md"
+    published.write_text(LAST_GOOD, encoding="utf-8")
+
+    clean, quarantine, results = check_quality(sample, cfg)
+    staged = reports_dir(cfg, "run_a")
+    write_quality_report(
+        results, cfg, len(sample), len(clean), len(quarantine), dest=staged
+    )
+
+    # Computed, but not published: the warehouse has not moved, so neither has
+    # the report describing it.
+    assert (staged / "data_quality_report.md").exists()
+    assert published.read_text(encoding="utf-8") == LAST_GOOD
+
+    # ... and then the publish fails.
+    parked = keep_failed_reports(cfg, "run_a")
+    assert published.read_text(encoding="utf-8") == LAST_GOOD
+    assert parked == cfg["paths"]["reports"] / "failed_runs" / "run_a"
+    assert "Data quality report" in (parked / "data_quality_report.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_successful_publish_promotes_the_staged_reports(sample, cfg, tmp_path):
+    """The other half of the same guarantee: when load() does commit, the new
+    reports must actually replace the old ones - staging is only safe if
+    promotion afterwards is unconditional."""
+    cfg = _staged_cfg(cfg, tmp_path)
+    published = cfg["paths"]["reports"] / "data_quality_report.md"
+    published.write_text(LAST_GOOD, encoding="utf-8")
+
+    clean, quarantine, results = check_quality(sample, cfg)
+    staged = reports_dir(cfg, "run_b")
+    write_quality_report(
+        results, cfg, len(sample), len(clean), len(quarantine), dest=staged
+    )
+
+    assert promote_reports(cfg, "run_b") == ["data_quality_report.md"]
+    assert "last good run" not in published.read_text(encoding="utf-8")
+    assert not list(staged.iterdir())  # moved, not copied
+
+
+def test_a_failed_gate_does_not_overwrite_the_published_report(sample, cfg, tmp_path):
+    """The gate report is the sharpest case.
+
+    check_quality writes "GATE FAILED - NOTHING WAS PUBLISHED" before raising.
+    Written into reports/, that sentence lands on top of the report describing
+    the data the warehouse still holds and still serves, telling every reader
+    the current contents were rejected - the reverse of what happened. It
+    belongs with the failed run.
+    """
+    cfg = _staged_cfg(cfg, tmp_path)
+    cfg["quality"]["max_quarantine_rate"] = 0.01
+    published = cfg["paths"]["reports"] / "data_quality_report.md"
+    published.write_text(LAST_GOOD, encoding="utf-8")
+
+    staged = reports_dir(cfg, "run_c")
+    with pytest.raises(ValueError, match="refusing to load"):
+        check_quality(sample, cfg, reports_dest=staged)
+
+    assert published.read_text(encoding="utf-8") == LAST_GOOD
+    parked = keep_failed_reports(cfg, "run_c")
+    assert "GATE FAILED" in (parked / "data_quality_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert published.read_text(encoding="utf-8") == LAST_GOOD
 
 
 # --- star schema ----------------------------------------------------------- #

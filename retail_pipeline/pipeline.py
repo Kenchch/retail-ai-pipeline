@@ -16,11 +16,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import time
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -203,7 +205,7 @@ CHECKS: list[Check] = [
 
 
 def check_quality(
-    df: pd.DataFrame, cfg: dict
+    df: pd.DataFrame, cfg: dict, *, reports_dest: Path | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Return (clean rows, quarantined rows with reasons, per-rule results).
 
@@ -268,6 +270,13 @@ def check_quality(
         # the previous run's green numbers in place, so the one run that needed
         # the report was the only run that did not produce it, and nothing in
         # the file said the run had failed at all.
+        #
+        # It goes to `reports_dest` when the caller supplies one, which is how
+        # the failure report reaches reports/failed_runs/<run_id>/ instead of
+        # replacing the report describing the data the warehouse still holds.
+        # A GATE FAILED report published over the last good one told every
+        # reader of reports/ that the current warehouse contents were rejected,
+        # which is the opposite of what happened.
         write_quality_report(
             results,
             cfg,
@@ -277,6 +286,7 @@ def check_quality(
             gate_failed=True,
             rate=rate,
             ceiling=cfg["quality"]["max_quarantine_rate"],
+            dest=reports_dest,
         )
         # Fail before loading, so a broken upstream extract leaves last night's
         # published data intact rather than replacing it with something thinner.
@@ -297,6 +307,7 @@ def write_quality_report(
     gate_failed: bool = False,
     rate: float | None = None,
     ceiling: float | None = None,
+    dest: Path | None = None,
 ) -> None:
     pct = 100 * n_q / n_in if n_in else 0.0
     lines = ["# Data quality report", ""]
@@ -328,7 +339,8 @@ def write_quality_report(
         "",
         "Rows can fail more than one check, so the column does not sum to the total.",
     ]
-    (cfg["paths"]["reports"] / "data_quality_report.md").write_text(
+    (dest or cfg["paths"]["reports"]).mkdir(parents=True, exist_ok=True)
+    ((dest or cfg["paths"]["reports"]) / "data_quality_report.md").write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
 
@@ -528,6 +540,62 @@ _INDEXES = (
 )
 
 
+def reports_dir(cfg: dict, run_id: str | None = None) -> Path:
+    """Where a report should be written *now*.
+
+    Reports used to go straight to reports/ from the tasks that compute them,
+    which all run before `publish`. A run whose publish then failed left last
+    night's warehouse beside tonight's reports - the reports describing data
+    nobody can query. They are published with the data instead: written into
+    the run's staging directory, and moved into place only after load() has
+    committed.
+
+    A failed run still needs its diagnostics, so those go to
+    reports/failed_runs/<run_id>/ rather than over the last good report. See
+    promote_reports().
+    """
+    if run_id is None:
+        return cfg["paths"]["reports"]
+    d = cfg["paths"]["staging"] / run_id / "reports"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def promote_reports(cfg: dict, run_id: str) -> list[str]:
+    """Move this run's staged reports into reports/. Called after publish."""
+    staged = cfg["paths"]["staging"] / run_id / "reports"
+    if not staged.is_dir():
+        return []
+    final = cfg["paths"]["reports"]
+    final.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for src in sorted(staged.iterdir()):
+        if src.is_file():
+            os.replace(src, final / src.name)
+            moved.append(src.name)
+    return moved
+
+
+def keep_failed_reports(cfg: dict, run_id: str) -> Path | None:
+    """Park a failed run's reports where they can be read without overwriting
+    the last successful ones.
+
+    The gate's own message says "investigate the source extract", and this is
+    what an investigator opens - so it has to survive, and it must not replace
+    the report describing the data currently in the warehouse.
+    """
+    staged = cfg["paths"]["staging"] / run_id / "reports"
+    if not staged.is_dir() or not any(staged.iterdir()):
+        return None
+    dest = cfg["paths"]["reports"] / "failed_runs" / run_id
+    dest.mkdir(parents=True, exist_ok=True)
+    for src in sorted(staged.iterdir()):
+        if src.is_file():
+            os.replace(src, dest / src.name)
+    log.warning("Reports for the failed run are in %s", dest)
+    return dest
+
+
 def load(tables: dict[str, pd.DataFrame], cfg: dict) -> None:
     """Publish to Parquet and SQLite, staging both so a mid-load failure cannot
     leave the two layers describing different runs.
@@ -693,6 +761,7 @@ def write_run_metrics(
     recs: pd.DataFrame,
     adoption_headline: pd.DataFrame,
     runtime_seconds: float,
+    dest: Path | None = None,
 ) -> dict:
     """Assemble and write reports/run_metrics.json.
 
@@ -727,7 +796,8 @@ def write_run_metrics(
         "inputs": _input_fingerprint(cfg),
         "runtime_seconds": round(runtime_seconds, 1),
     }
-    (cfg["paths"]["reports"] / "run_metrics.json").write_text(
+    (dest or cfg["paths"]["reports"]).mkdir(parents=True, exist_ok=True)
+    ((dest or cfg["paths"]["reports"]) / "run_metrics.json").write_text(
         json.dumps(metrics, indent=2, default=str), encoding="utf-8"
     )
     return metrics
@@ -742,30 +812,52 @@ def run(config_path: str | None = None) -> dict:
     for key in ("processed", "reports"):
         cfg["paths"][key].mkdir(parents=True, exist_ok=True)
 
-    log.info("--- 1/5 extract")
-    raw = extract(cfg)
-    log.info("--- 2/5 data quality")
-    clean, quarantine, results = check_quality(raw, cfg)
-    write_quality_report(results, cfg, len(raw), len(clean), len(quarantine))
-    log.info("--- 3/5 transform")
-    tables = transform(clean)
-    log.info("--- 4/5 recommend")
-    recs = recommend(tables, cfg)
-    log.info("--- 5/5 adoption")
-    adoption = measure_adoption(cfg)
+    # Reports are published WITH the data, not before it. Everything below
+    # writes into this run's staging directory; reports/ is only touched once
+    # load() has committed. See reports_dir().
+    run_id = f"local_{datetime.now(timezone.utc):%Y%m%dT%H%M%S%f}"
+    staged = reports_dir(cfg, run_id)
+    try:
+        log.info("--- 1/5 extract")
+        raw = extract(cfg)
+        log.info("--- 2/5 data quality")
+        clean, quarantine, results = check_quality(raw, cfg, reports_dest=staged)
+        write_quality_report(
+            results, cfg, len(raw), len(clean), len(quarantine), dest=staged
+        )
+        log.info("--- 3/5 transform")
+        tables = transform(clean)
+        log.info("--- 4/5 recommend")
+        recs = recommend(tables, cfg)
+        log.info("--- 5/5 adoption")
+        adoption = measure_adoption(cfg, reports_dest=staged)
 
-    load({**tables, "quarantine": quarantine, "recommendations": recs, **adoption}, cfg)
+        load(
+            {**tables, "quarantine": quarantine, "recommendations": recs, **adoption},
+            cfg,
+        )
 
-    metrics = write_run_metrics(
-        cfg,
-        n_raw=len(raw),
-        n_quarantined=len(quarantine),
-        n_clean=len(clean),
-        n_products=len(tables["dim_product"]),
-        recs=recs,
-        adoption_headline=adoption["adoption_headline"],
-        runtime_seconds=time.perf_counter() - started,
-    )
+        metrics = write_run_metrics(
+            cfg,
+            n_raw=len(raw),
+            n_quarantined=len(quarantine),
+            n_clean=len(clean),
+            n_products=len(tables["dim_product"]),
+            recs=recs,
+            adoption_headline=adoption["adoption_headline"],
+            runtime_seconds=time.perf_counter() - started,
+            dest=staged,
+        )
+    except BaseException:
+        # Whatever was computed before the failure is still worth reading, so it
+        # is parked under reports/failed_runs/ - never over the report that
+        # describes the data currently in the warehouse.
+        keep_failed_reports(cfg, run_id)
+        shutil.rmtree(cfg["paths"]["staging"] / run_id, ignore_errors=True)
+        raise
+
+    promote_reports(cfg, run_id)
+    shutil.rmtree(cfg["paths"]["staging"] / run_id, ignore_errors=True)
     log.info("Done in %.1fs", metrics["runtime_seconds"])
     return metrics
 
