@@ -25,7 +25,6 @@ from retail_pipeline.pipeline import (
     extract,
     finalize_reports,
     load_config,
-    mark_published,
     published_reports,
     reports_dir,
     transform,
@@ -265,6 +264,42 @@ def _fill_version(cfg, run_id, marker="v"):
     return version
 
 
+def _warehouse_cfg(cfg, tmp_path):
+    cfg["paths"] = dict(
+        cfg["paths"],
+        processed=tmp_path / "processed",
+        warehouse=tmp_path / "warehouse" / "retail.db",
+    )
+    cfg["paths"]["processed"].mkdir(parents=True, exist_ok=True)
+    cfg["paths"]["warehouse"].parent.mkdir(parents=True, exist_ok=True)
+    return cfg
+
+
+def _load_into_warehouse(cfg, run_id):
+    """Publish a run's data for real, so the warehouse stamp is genuine.
+
+    The stamp is the only thing that authorises moving reports/CURRENT, so
+    tests have to produce it the way production does rather than by writing the
+    diagnostic marker file.
+    """
+    P.load(
+        {
+            "fact_sales": pd.DataFrame(
+                {
+                    "invoice_no": [run_id],
+                    "stock_code": ["S"],
+                    "date_key": ["2011-01-01"],
+                }
+            )
+        },
+        cfg,
+        run_id=run_id,
+    )
+    # The same pair run() writes: the warehouse stamp, which authorises, and
+    # the diagnostic marker beside it.
+    P.mark_published(cfg, run_id)
+
+
 def test_a_version_is_published_by_one_atomic_write(cfg, tmp_path):
     """reports/ describes what is IN the warehouse.
 
@@ -403,10 +438,10 @@ def test_the_finaliser_is_idempotent(cfg, tmp_path):
     """Airflow retries tasks, so running this twice must not undo the first
     run - neither by re-archiving a published version nor by failing on one
     that is already gone."""
-    cfg = _staged_cfg(cfg, tmp_path)
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
 
     _fill_version(cfg, "run_ok")
-    mark_published(cfg, "run_ok")
+    _load_into_warehouse(cfg, "run_ok")
     assert finalize_reports(cfg, "run_ok") == "published"
     assert finalize_reports(cfg, "run_ok") == "noop"
     assert current_run_id(cfg) == "run_ok"
@@ -417,13 +452,53 @@ def test_the_finaliser_is_idempotent(cfg, tmp_path):
     assert current_run_id(cfg) == "run_ok", "a retry unpublished the good version"
 
 
+def test_a_superseded_version_cannot_republish_itself(cfg, tmp_path):
+    """The marker file is not evidence of anything current.
+
+    It records that a run published AT THE TIME IT RAN. Publish run_x, publish
+    run_y, then re-run run_x's finaliser - a cleared task, a retry, a backfill -
+    and the stale marker rolled reports/CURRENT back to run_x while the
+    warehouse held run_y. That is exactly the mixed state the pointer exists to
+    prevent, reached through the mechanism meant to prevent it.
+
+    Only the warehouse can authorise a publish, because only its answer commits
+    with the data. A superseded version is "stale", not "failed": it did
+    publish, so archiving it to failed_runs would label a successful run a
+    failure. It stays in runs/ for pruning to age out.
+    """
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
+
+    _fill_version(cfg, "run_x", marker="x")
+    _load_into_warehouse(cfg, "run_x")
+    assert finalize_reports(cfg, "run_x") == "published"
+
+    _fill_version(cfg, "run_y", marker="y")
+    _load_into_warehouse(cfg, "run_y")
+    assert finalize_reports(cfg, "run_y") == "published"
+    assert current_run_id(cfg) == "run_y"
+
+    # run_x still has its version directory and its marker.
+    assert (P._version_root(cfg) / "run_x" / P.PUBLISHED_MARKER).exists()
+
+    assert finalize_reports(cfg, "run_x") == "stale"
+    assert current_run_id(cfg) == "run_y", "a stale marker rolled CURRENT back"
+    assert P.warehouse_run_id(cfg) == "run_y"
+    for name in REPORT_NAMES:
+        assert (
+            (published_reports(cfg) / name).read_text(encoding="utf-8").startswith("y")
+        )
+    # Superseded, not failed - it is not moved out to failed_runs.
+    assert (P._version_root(cfg) / "run_x").is_dir()
+    assert not (cfg["paths"]["reports"] / "failed_runs" / "run_x").exists()
+
+
 def test_pruning_never_removes_the_published_version(cfg, tmp_path):
     """A run that fails after a successful one leaves a NEWER directory that is
     not published, so "keep the newest" is not the same as "keep the current
     one"."""
-    cfg = _staged_cfg(cfg, tmp_path)
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
     _fill_version(cfg, "run_00")
-    mark_published(cfg, "run_00")
+    _load_into_warehouse(cfg, "run_00")
     finalize_reports(cfg, "run_00")
     for i in range(1, 9):
         _fill_version(cfg, f"run_{i:02d}")

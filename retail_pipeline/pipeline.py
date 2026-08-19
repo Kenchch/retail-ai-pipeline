@@ -640,11 +640,13 @@ def warehouse_run_id(cfg: dict) -> str | None:
 
 
 def mark_published(cfg: dict, run_id: str) -> None:
-    """Record that the data for this version reached the warehouse.
+    """Record that this version's data reached the warehouse, when it did.
 
-    Called immediately after load() commits. The finaliser reads this rather
-    than asking Airflow whether the publish task succeeded, which keeps it a
-    plain function - testable, and correct when Airflow retries it.
+    Diagnostic only. It says "this run published at the time it ran", which is
+    not the same as "this run is what the warehouse holds now" - and only the
+    second can authorise moving reports/CURRENT. finalize_reports uses it to
+    tell a version that has been superseded ("stale") from one that never
+    published at all ("failed"); see the note there.
     """
     (reports_dir(cfg, run_id) / PUBLISHED_MARKER).write_text(
         run_id + "\n", encoding="utf-8"
@@ -728,7 +730,7 @@ def keep_failed_reports(cfg: dict, run_id: str) -> Path | None:
 def finalize_reports(cfg: dict, run_id: str) -> str:
     """Decide what becomes of this run's version. Safe to run twice.
 
-    Returns "published", "failed" or "noop".
+    Returns "published", "stale", "failed" or "noop".
 
     One function, run once every task has reached a terminal state, rather than
     an archive task on `one_failed`. `one_failed` fires as soon as ANY upstream
@@ -736,6 +738,20 @@ def finalize_reports(cfg: dict, run_id: str) -> str:
     version while the adoption branch - which has no upstream and runs in
     parallel - was still computing. Adoption then wrote its report into a
     directory that had already been moved, and nobody ever saw it.
+
+    **The warehouse is the only thing that can authorise a publish.** The
+    marker file used to be accepted as a fallback, and it is not evidence of
+    anything current: it records that this run published at the time it ran.
+    Publish run_x, publish run_y, then re-run run_x's finaliser - a retry, a
+    cleared task, a backfill - and the stale marker rolled CURRENT back to
+    run_x while the warehouse held run_y. That is precisely the mixed state the
+    pointer exists to prevent, reached by the mechanism meant to prevent it.
+
+    So CURRENT only ever moves to the run the warehouse says it is holding.
+    A version with a marker the warehouse has moved past is "stale": it did
+    publish once, it is simply not current any more, and it is left where it is
+    for prune_report_versions to age out. Archiving it would label a
+    successful run a failure.
 
     Idempotent because Airflow retries tasks: if CURRENT already names this run
     there is nothing to publish, and if the version has already been archived
@@ -746,11 +762,22 @@ def finalize_reports(cfg: dict, run_id: str) -> str:
         return "noop"  # already published - this is a retry
     if not version.is_dir():
         return "noop"  # already archived - this is a retry
-    # The warehouse first, because its answer commits atomically with the data.
-    # The marker file is the fallback, for a load() called without a run_id.
-    if warehouse_run_id(cfg) == run_id or (version / PUBLISHED_MARKER).exists():
+
+    if warehouse_run_id(cfg) == run_id:
         publish_version(cfg, run_id)
         return "published"
+
+    if (version / PUBLISHED_MARKER).exists():
+        # It published, and the warehouse has since moved on. Not a failure,
+        # and not something to point CURRENT at.
+        log.info(
+            "Version %s published earlier; the warehouse is now on %s, so "
+            "reports/CURRENT is left alone.",
+            run_id,
+            warehouse_run_id(cfg),
+        )
+        return "stale"
+
     keep_failed_reports(cfg, run_id)
     return "failed"
 
@@ -1095,9 +1122,10 @@ def run(config_path: str | None = None) -> dict:
             cfg,
             run_id=run_id,
         )
-        # Belt and braces. load() has already stamped the run_id inside its
-        # own transaction, which is what finalize_reports actually reads; this
-        # file is the fallback for a load() called without one.
+        # Diagnostic. load() has already stamped the run_id inside its own
+        # transaction, and that stamp is the only thing that authorises a
+        # publish; this file just distinguishes a superseded version from one
+        # that never published.
         mark_published(cfg, run_id)
     except BaseException:
         # Whatever was computed before the failure is still worth reading, so
