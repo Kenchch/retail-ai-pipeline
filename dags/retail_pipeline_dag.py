@@ -392,6 +392,13 @@ with DAG(
         task_id="watcher",
         python_callable=task_watcher,
         trigger_rule="one_failed",
+        # retries=0, against the DAG's default of 2 with a 5-minute delay.
+        # This task fails ON PURPOSE - that is its entire function - so
+        # inheriting the retry policy meant two pointless re-runs and roughly
+        # ten minutes before the run went red. An alert wired to run state
+        # would have arrived ten minutes late, which for a nightly job is ten
+        # minutes of someone believing the warehouse refreshed.
+        retries=0,
     )
 
     # Everything upstream of `publish` computes into per-run staging and touches
