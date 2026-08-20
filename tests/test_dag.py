@@ -120,3 +120,15 @@ def test_adoption_is_a_root_task():
     """It reads telemetry and nothing the extract produces, so a slow or broken
     extract must not stop it being calculated. It joins at the publish."""
     assert dag.get_task("measure_adoption").upstream_task_ids == set()
+
+
+def test_the_watcher_does_not_retry():
+    """It fails on purpose - that is its whole function.
+
+    Inheriting the DAG's retries=2 / 5-minute policy meant two pointless
+    re-runs and about ten minutes before the run went red, so an alert wired to
+    run state arrived ten minutes late. For a nightly job that is ten minutes
+    of someone believing the warehouse refreshed.
+    """
+    assert dag.get_task("watcher").retries == 0
+    assert dag.get_task("data_quality_gate").retries == 2  # the default still applies
