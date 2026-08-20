@@ -94,12 +94,28 @@ object storage (fsspec) and the warehouse onto a shared database — the stage
 functions would not change, but every path in `config.yaml` would. Adding that
 here would be cloud infrastructure in service of a demo.
 
-**The guarantee, stated precisely.** SQLite is swapped in one transaction —
-tables built as `<name>__new`, then dropped, renamed and indexed inside a single
-`BEGIN IMMEDIATE`, so a failure anywhere in that leaves the whole database on
-the previous run. No Parquet file is moved into the published directory until
-that transaction has committed, and a failure before it deletes the staged
-files.
+**The guarantee, stated precisely.** A run is a *version*. Every Parquet
+file and the SQLite database are written into `data/runs/<run_id>/`, nothing
+in there is visible to anyone, and publishing it is a single `os.replace` of
+`data/CURRENT` — one atomic filesystem operation. Consumers resolve the pointer
+and read the version it names, so they see the previous run in full or this one
+in full, never a mixture. A run that fails has its whole version directory
+deleted; there is nothing to roll back because nothing was ever visible.
+
+SQLite is still swapped in one transaction inside that version — tables built
+as `<name>__new`, then dropped, renamed and indexed inside a single
+`BEGIN IMMEDIATE` — and it carries the run_id in a `_publication` table, which
+the publish checks against the directory before moving the pointer.
+
+This replaced a SQLite commit followed by one `os.replace` per Parquet file. N
+renames can half-succeed, and injecting an `OSError` into the second one
+produced exactly what that implies: SQLite on tonight's run, `fact_sales` on
+tonight's, `dim_product` and `quarantine` still on last night's — and since the
+report finaliser took the SQLite stamp as its authority, `reports/CURRENT`
+advanced as well. Anything reading the directory got tonight's facts joined
+against last night's dimensions, in a run that reported success. Retirement is
+structural now too: a table that stops being published is simply not written
+into the new version, so the two layers cannot retire out of step.
 
 **Reports are versioned, and published by a pointer.** Every run writes its
 three reports into `reports/runs/<run_id>/`, all three built from the same
@@ -115,30 +131,25 @@ never becomes current. (The three files at the top of `reports/` are a copy of
 the current version, committed so a reader does not have to clone and run the
 pipeline; each one names its `run_id`.)
 
-**What is *not* covered, stated exactly.** Two things.
+**What is *not* covered, stated exactly.** The data and the reports are two
+versioned trees with two pointers — `data/CURRENT` and `reports/CURRENT` — and
+no transaction spans them. `finalize_reports` moves the report pointer only
+when `data/CURRENT` already names the same run, so the reports cannot get
+ahead; but a crash between the two leaves the data published and the reports
+one run behind. Collapsing them into a single pointer over a single tree is the
+remaining step, and it would mean the reports and the warehouse sharing a
+retention policy, which they should not — three markdown files are worth
+keeping for months, half a gigabyte of Parquet is not.
 
-The Parquet layer still promotes file by file, so a crash inside that final
-rename loop can leave a mixed set. SQLite is unaffected — it swaps in one
-transaction.
-
-And there is no transaction spanning the warehouse and `reports/CURRENT`, so a
-crash between the two leaves a new warehouse beside old reports. Both have the
-same fix — one versioned directory holding `retail.db`, the Parquet files and
-the reports, named by a single `CURRENT` that every consumer reads first — and
-this project does not do it, because the Power BI model and every
-`data/processed/*.parquet` path point straight at a fixed directory.
-
-What it does instead is make the mismatch **detectable**. `load()` stamps the
-run_id inside its own swap transaction, so the warehouse says which run it
-holds the instant it holds it; `reports/CURRENT` says which run the reports
-are. Every run logs both:
+The mismatch is made **detectable** rather than impossible. Every run logs
+both:
 
 ```
 Done in 12.2s | warehouse run local_20260819T094207619994 | reports run local_20260819T094207619994
 ```
 
 Two different ids is a warehouse ahead of its reports, and re-running the
-finaliser publishes the version the warehouse already has.
+finaliser publishes the version the data pointer already names.
 
 **Data quality (9 rules, 4 dimensions).** Cancellations, non-positive quantities
 and prices, duplicates, price outliers and non-product stock codes are

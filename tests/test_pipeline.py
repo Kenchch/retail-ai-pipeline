@@ -9,6 +9,7 @@ tests exist.
 
 import os
 import pathlib
+import shutil
 
 import pandas as pd
 import pytest
@@ -265,14 +266,38 @@ def _fill_version(cfg, run_id, marker="v"):
 
 
 def _warehouse_cfg(cfg, tmp_path):
+    """Point the data layer at a temp directory.
+
+    data_runs is the one that matters now: the pipeline publishes each run into
+    data/runs/<run_id>/ and moves data/CURRENT, so `processed` and `warehouse`
+    are only the legacy paths a pre-version warehouse would be found at.
+    """
     cfg["paths"] = dict(
         cfg["paths"],
+        data_runs=tmp_path / "data" / "runs",
         processed=tmp_path / "processed",
-        warehouse=tmp_path / "warehouse" / "retail.db",
+        warehouse=tmp_path / "legacy" / "retail.db",
     )
     cfg["paths"]["processed"].mkdir(parents=True, exist_ok=True)
-    cfg["paths"]["warehouse"].parent.mkdir(parents=True, exist_ok=True)
     return cfg
+
+
+def _published(cfg, name):
+    """Read a published table, through the pointer rather than a fixed path."""
+    return pd.read_parquet(P.published_data_dir(cfg) / f"{name}.parquet")
+
+
+def _warehouse_tables(cfg):
+    import sqlite3 as _sqlite3
+
+    db = P.warehouse_path(cfg)
+    if db is None:
+        return set()
+    with _sqlite3.connect(db) as conn:
+        return {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
 
 
 def _load_into_warehouse(cfg, run_id):
@@ -530,8 +555,7 @@ def test_the_data_does_not_move_unless_the_version_is_complete(
     from retail_pipeline import recommend as recommend_module
 
     cfg = _staged_cfg(cfg, tmp_path)
-    cfg["paths"]["processed"] = tmp_path / "processed"
-    cfg["paths"]["warehouse"] = tmp_path / "warehouse" / "retail.db"
+    cfg = _warehouse_cfg(cfg, tmp_path)
     _fill_version(cfg, "run_old", marker="old")
     P.publish_version(cfg, "run_old")
 
@@ -585,10 +609,7 @@ def test_the_warehouse_records_which_run_it_holds(cfg, tmp_path):
     means it becomes true at the same instant the data does.
     """
     cfg = _staged_cfg(cfg, tmp_path)
-    cfg["paths"] = dict(
-        cfg["paths"], processed=tmp_path / "processed", warehouse=tmp_path / "w.db"
-    )
-    cfg["paths"]["processed"].mkdir(parents=True)
+    cfg = _warehouse_cfg(cfg, tmp_path)
 
     assert P.warehouse_run_id(cfg) is None  # nothing published yet
 
@@ -607,10 +628,7 @@ def test_a_warehouse_on_a_different_run_does_not_publish_this_version(cfg, tmp_p
     """The stamp has to be checked, not merely present: a warehouse left on
     last night's run must not let tonight's failed version become current."""
     cfg = _staged_cfg(cfg, tmp_path)
-    cfg["paths"] = dict(
-        cfg["paths"], processed=tmp_path / "processed", warehouse=tmp_path / "w.db"
-    )
-    cfg["paths"]["processed"].mkdir(parents=True)
+    cfg = _warehouse_cfg(cfg, tmp_path)
     frame = pd.DataFrame({"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["d"]})
     P.load({"fact_sales": frame}, cfg, run_id="run_last_night")
 
@@ -1079,8 +1097,9 @@ def test_load_publishes_neither_layer_when_sqlite_fails(cfg, tmp_path, monkeypat
 
     cfg["paths"] = dict(
         cfg["paths"],
+        data_runs=tmp_path / "data" / "runs",
         processed=tmp_path / "processed",
-        warehouse=tmp_path / "wh" / "retail.db",
+        warehouse=tmp_path / "legacy" / "retail.db",
     )
     old = {
         "dim_product": _pd.DataFrame(
@@ -1114,7 +1133,7 @@ def test_load_publishes_neither_layer_when_sqlite_fails(cfg, tmp_path, monkeypat
 
     import sqlite3
 
-    with sqlite3.connect(cfg["paths"]["warehouse"]) as conn:
+    with sqlite3.connect(P.warehouse_path(cfg)) as conn:
         assert conn.execute("SELECT stock_code FROM fact_sales").fetchall() == [
             ("OLD",)
         ]
@@ -1122,7 +1141,7 @@ def test_load_publishes_neither_layer_when_sqlite_fails(cfg, tmp_path, monkeypat
             ("OLD",)
         ]
     for name in ("fact_sales", "dim_product"):
-        got = _pd.read_parquet(cfg["paths"]["processed"] / f"{name}.parquet")
+        got = _pd.read_parquet(P.published_data_dir(cfg) / f"{name}.parquet")
         assert list(got["stock_code"]) == ["OLD"], (
             f"{name} parquet was published anyway"
         )
@@ -1142,7 +1161,7 @@ def test_an_index_failure_leaves_both_layers_on_the_previous_run(cfg, tmp_path):
 
     from retail_pipeline import pipeline as P
 
-    cfg["paths"] = dict(cfg["paths"], processed=tmp_path, warehouse=tmp_path / "w.db")
+    cfg = _warehouse_cfg(cfg, tmp_path)
     # date_key and stock_code exist because the real _INDEXES reference them.
     first = {
         "fact_sales": pd.DataFrame(
@@ -1160,7 +1179,7 @@ def test_an_index_failure_leaves_both_layers_on_the_previous_run(cfg, tmp_path):
         with pytest.raises(sqlite3.OperationalError):
             P.load(second, cfg)
 
-    with sqlite3.connect(cfg["paths"]["warehouse"]) as conn:
+    with sqlite3.connect(P.warehouse_path(cfg)) as conn:
         rows = conn.execute("SELECT count(*) FROM fact_sales").fetchone()[0]
         leftover = [
             r[0]
@@ -1169,9 +1188,11 @@ def test_an_index_failure_leaves_both_layers_on_the_previous_run(cfg, tmp_path):
             )
         ]
     assert rows == 1, "SQLite moved to the failed run"
-    assert len(pd.read_parquet(tmp_path / "fact_sales.parquet")) == 1
+    assert len(_published(cfg, "fact_sales")) == 1
     # pandas commits <name>__new outside the swap transaction, so a rollback
-    # would otherwise leave a partial run's rows sitting in the database.
+    # would otherwise leave a partial run's rows sitting in the database. It
+    # cannot reach a consumer now either way - the failed version is deleted
+    # whole - but a leak here would still be a leak.
     assert leftover == [], f"staging tables leaked: {leftover}"
 
 
@@ -1180,24 +1201,26 @@ def test_a_table_that_stops_being_published_is_retired(cfg, tmp_path):
     adoption_top_products sat there for weeks, still answering queries with
     whatever the last version that wrote them produced. A stale table that
     answers is worse than a missing one that errors."""
-    import sqlite3
 
     from retail_pipeline import pipeline as P
 
-    cfg["paths"] = dict(cfg["paths"], processed=tmp_path, warehouse=tmp_path / "w.db")
+    cfg = _warehouse_cfg(cfg, tmp_path)
     frame = pd.DataFrame({"a": [1]})
-    P.load({"keep": frame, "retire_me": frame}, cfg)
-    assert (tmp_path / "retire_me.parquet").exists()
+    P.load({"keep": frame, "retire_me": frame}, cfg, run_id="run_1")
+    assert (P.published_data_dir(cfg) / "retire_me.parquet").exists()
 
-    P.load({"keep": frame}, cfg)
+    P.load({"keep": frame}, cfg, run_id="run_2")
 
-    with sqlite3.connect(cfg["paths"]["warehouse"]) as conn:
-        tables = {
-            r[0]
-            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
+    tables = _warehouse_tables(cfg)
     assert "keep" in tables and "retire_me" not in tables
-    assert not (tmp_path / "retire_me.parquet").exists(), "Parquet outlived its table"
+    # Retirement is structural now: a table that is not written into the new
+    # version stops being published the moment CURRENT moves. There is no
+    # separate Parquet delete that could fall out of step with the DROP,
+    # because there is no shared directory for the two layers to disagree in.
+    assert not (P.published_data_dir(cfg) / "retire_me.parquet").exists()
+    # The previous version still has it, untouched, which is what makes a
+    # rollback a pointer move rather than a restore.
+    assert (cfg["paths"]["data_runs"] / "run_1" / "retire_me.parquet").exists()
 
 
 def test_a_warehouse_predating_the_manifest_still_retires_its_legacy_tables(
@@ -1217,8 +1240,13 @@ def test_a_warehouse_predating_the_manifest_still_retires_its_legacy_tables(
 
     from retail_pipeline import pipeline as P
 
-    cfg["paths"] = dict(cfg["paths"], processed=tmp_path, warehouse=tmp_path / "w.db")
-    with sqlite3.connect(tmp_path / "w.db") as conn:
+    cfg = _warehouse_cfg(cfg, tmp_path)
+    # At the LEGACY fixed path, which is where a warehouse built before the
+    # move to versioned data actually sits. load() carries it into the first
+    # version so its _published manifest still drives retirement - without
+    # that, the migration would simply never see the old database.
+    cfg["paths"]["warehouse"].parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(cfg["paths"]["warehouse"]) as conn:
         for name in (*P.LEGACY_RETIRED_TABLES, "someone_elses_table"):
             conn.execute(f'CREATE TABLE "{name}" (a INTEGER)')
             conn.execute(f'INSERT INTO "{name}" VALUES (1)')
@@ -1233,7 +1261,7 @@ def test_a_warehouse_predating_the_manifest_still_retires_its_legacy_tables(
         cfg,
     )
 
-    with sqlite3.connect(tmp_path / "w.db") as conn:
+    with sqlite3.connect(P.warehouse_path(cfg)) as conn:
         tables = {
             r[0]
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -1261,8 +1289,8 @@ def test_a_legacy_parquet_is_retired_even_when_its_table_is_already_gone(cfg, tm
     """
     from retail_pipeline import pipeline as P
 
-    cfg["paths"] = dict(cfg["paths"], processed=tmp_path, warehouse=tmp_path / "w.db")
-    orphan = tmp_path / "dq_results.parquet"
+    cfg = _warehouse_cfg(cfg, tmp_path)
+    orphan = cfg["paths"]["processed"] / "dq_results.parquet"
     pd.DataFrame({"check": ["cancelled_invoice"], "failed_rows": [9999]}).to_parquet(
         orphan, index=False
     )
@@ -1277,4 +1305,107 @@ def test_a_legacy_parquet_is_retired_even_when_its_table_is_already_gone(cfg, tm
         cfg,
     )
 
-    assert not orphan.exists(), "an orphaned legacy Parquet outlived the migration"
+    # The orphan is in the OLD fixed directory, which nothing publishes from
+    # any more: a consumer resolves data/CURRENT and lands in the version
+    # directory, where dq_results has never existed. It does not have to be
+    # deleted to stop being served - it stops being served by not being in the
+    # published version. That is the whole reason the intersection bug (which
+    # left it published indefinitely) cannot recur.
+    published = P.published_data_dir(cfg)
+    assert not (published / "dq_results.parquet").exists()
+    assert sorted(f.name for f in published.glob("*.parquet")) == ["fact_sales.parquet"]
+
+
+def test_no_consumer_can_see_part_of_a_failed_publish(cfg, tmp_path):
+    """FAULT INJECTION: the Nth table fails to write.
+
+    The publish used to be a SQLite commit followed by one os.replace per
+    Parquet file, and N renames can half-succeed. Injecting an OSError into the
+    second one produced exactly that: SQLite on tonight's run, fact_sales on
+    tonight's, dim_product and quarantine still on last night's - and because
+    the report finaliser took the SQLite stamp as its authority, reports/CURRENT
+    advanced too. Everything downstream read tonight's facts joined against
+    last night's dimensions, in a run that reported success.
+
+    A version is a directory now, and publishing it is one write to
+    data/CURRENT. This asserts what that buys: after the failure, every
+    consumer - the data pointer, the warehouse, each Parquet file, the report
+    pointer - is still on the previous run, and no part of the failed one is
+    reachable.
+    """
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
+    names = ("fact_sales", "dim_product", "quarantine")
+
+    def tables(marker):
+        return {
+            n: pd.DataFrame(
+                {"invoice_no": [marker], "stock_code": ["S"], "date_key": ["d"]}
+            )
+            for n in names
+        }
+
+    P.load(tables("OLD"), cfg, run_id="run_old")
+    _fill_version(cfg, "run_old", marker="old")
+    P.mark_published(cfg, "run_old")
+    assert finalize_reports(cfg, "run_old") == "published"
+
+    real = pd.DataFrame.to_parquet
+    calls = {"n": 0}
+
+    def flaky(self, path, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk went away on the second table")
+        return real(self, path, *a, **k)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pd.DataFrame, "to_parquet", flaky)
+        with pytest.raises(OSError, match="second table"):
+            P.load(tables("NEW"), cfg, run_id="run_new")
+
+    _fill_version(cfg, "run_new", marker="new")
+    assert finalize_reports(cfg, "run_new") == "failed"
+
+    assert P.data_current_run_id(cfg) == "run_old"
+    assert P.warehouse_run_id(cfg) == "run_old"
+    assert current_run_id(cfg) == "run_old"
+    for name in names:
+        assert _published(cfg, name)["invoice_no"][0] == "OLD", (
+            f"{name} shows the failed run"
+        )
+    for report in REPORT_NAMES:
+        assert (
+            (published_reports(cfg) / report)
+            .read_text(encoding="utf-8")
+            .startswith("old")
+        )
+    # Nothing of the failed version survives to be stumbled into.
+    assert not (cfg["paths"]["data_runs"] / "run_new").exists()
+
+
+def test_the_pointer_only_moves_when_the_version_verifies(cfg, tmp_path):
+    """A version that is not whole must not be pointed at.
+
+    exists() is not enough - a rename that half-completed or a disk that filled
+    leaves a file of the right name and the wrong contents, and the check has
+    to open them.
+    """
+    cfg = _warehouse_cfg(cfg, tmp_path)
+    frame = pd.DataFrame({"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["d"]})
+    P.load({"fact_sales": frame}, cfg, run_id="run_ok")
+
+    version = P.data_version_dir(cfg, "run_torn")
+    (version / "fact_sales.parquet").write_bytes(b"PAR1 truncated garbage")
+    with pytest.raises(OSError, match="unreadable"):
+        P.verify_data_version(cfg, "run_torn", {"fact_sales": frame})
+    assert P.data_current_run_id(cfg) == "run_ok"
+
+    # ... and a database stamped for a different run is refused too.
+    P.load({"fact_sales": frame}, cfg, run_id="run_two")
+    mislabelled = P.data_version_dir(cfg, "run_three")
+    shutil.copytree(
+        cfg["paths"]["data_runs"] / "run_two", mislabelled, dirs_exist_ok=True
+    )
+    with pytest.raises(ValueError, match="is stamped 'run_two'"):
+        P.verify_data_version(cfg, "run_three", {"fact_sales": frame})
+    assert P.data_current_run_id(cfg) == "run_two"
