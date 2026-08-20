@@ -8,6 +8,9 @@ data/raw/*
 data/processed/
 data/staging/
 data/warehouse/
+# One directory per run, plus the pointer naming the published one.
+data/runs/
+data/CURRENT
 
 # The runtime layout - reports/runs/<run_id>/ and the reports/CURRENT pointer
 # that names the published one - is generated, and stays out of git.

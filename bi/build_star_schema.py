@@ -43,7 +43,30 @@ import pandas as pd
 from retail_pipeline.pipeline import CHECKS
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "data" / "processed"
+
+
+def _published_src() -> Path:
+    """The data version data/CURRENT names.
+
+    Not a fixed directory. The pipeline publishes each run into
+    data/runs/<run_id>/ and moves one pointer, so reading the pointer is what
+    guarantees this script sees one run's tables rather than a mixture of two -
+    which is what a half-finished publish into a fixed directory produced, and
+    what these CSVs would then have carried into the Power BI model.
+    """
+    from retail_pipeline.pipeline import load_config, published_data_dir
+
+    src = published_data_dir(load_config())
+    if src is None:
+        raise SystemExit(
+            "nothing is published yet - data/CURRENT is missing or names a "
+            "version that is not there. Run `python -m retail_pipeline.pipeline` "
+            "first."
+        )
+    return src
+
+
+SRC = _published_src()
 OUT = Path(__file__).resolve().parent / "model"
 
 UNKNOWN_KEY = -1

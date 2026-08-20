@@ -49,7 +49,7 @@ commands:
 
 ```bash
 python scripts/get_data.py           # ~45 MB source extract into data/raw
-python -m retail_pipeline.pipeline   # produces data/processed/*.parquet
+python -m retail_pipeline.pipeline   # publishes data/runs/<run_id>/ + data/CURRENT
 python -m bi.build_star_schema       # produces bi/model/*.csv
 ```
 

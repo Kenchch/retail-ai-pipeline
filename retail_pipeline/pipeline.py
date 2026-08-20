@@ -28,6 +28,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -568,6 +569,144 @@ REPORT_NAMES = (
 PUBLISHED_MARKER = ".published"
 
 
+WAREHOUSE_FILE = "retail.db"
+
+
+def data_version_dir(cfg: dict, run_id: str) -> Path:
+    """This run's data version: data/runs/<run_id>/, holding every Parquet file
+    and the SQLite warehouse.
+
+    The publish used to be a SQLite commit followed by N separate os.replace
+    calls on the Parquet files, and N separate renames can half-succeed.
+    Injecting an OSError into the second one produced exactly what that
+    implies: SQLite on tonight's run, fact_sales.parquet on tonight's,
+    dim_product.parquet and quarantine.parquet still on last night's - and
+    because the report finaliser took the SQLite stamp as authority, the
+    reports advanced too and the whole thing reported as a successful run.
+    Anything reading the directory got tonight's facts joined against last
+    night's dimensions.
+
+    A version is a directory, built whole and verified, and publishing it is
+    one write to data/CURRENT. See publish_data_version().
+    """
+    d = cfg["paths"]["data_runs"] / run_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _data_current_file(cfg: dict) -> Path:
+    return cfg["paths"]["data_runs"].parent / "CURRENT"
+
+
+def data_current_run_id(cfg: dict) -> str | None:
+    """The run_id data/CURRENT names, or None if nothing is published."""
+    f = _data_current_file(cfg)
+    if not f.exists():
+        return None
+    return f.read_text(encoding="utf-8").strip() or None
+
+
+def published_data_dir(cfg: dict) -> Path | None:
+    """The data version every consumer should read. Always complete.
+
+    bi/build_star_schema.py, and anything else reading the analytics layer,
+    goes through here rather than at a fixed directory, so it cannot observe a
+    half-swapped set.
+    """
+    run_id = data_current_run_id(cfg)
+    if run_id is None:
+        return None
+    d = cfg["paths"]["data_runs"] / run_id
+    return d if d.is_dir() else None
+
+
+def warehouse_path(cfg: dict) -> Path | None:
+    """The published SQLite file, or None when nothing is published."""
+    d = published_data_dir(cfg)
+    return None if d is None else d / WAREHOUSE_FILE
+
+
+def verify_data_version(cfg: dict, run_id: str, tables) -> Path:
+    """Every file present, readable, and the database stamped with this run.
+
+    Checked before the pointer moves, because after it moves is too late. The
+    Parquet files are opened rather than stat-ed: a rename that half-completed
+    or a disk that filled leaves a file of the right name and the wrong
+    contents, and `exists()` is happy with both.
+    """
+    version = data_version_dir(cfg, run_id)
+    missing = [n for n in tables if not (version / f"{n}.parquet").is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"{version} is missing {', '.join(sorted(missing))} - refusing to "
+            f"publish an incomplete data version."
+        )
+    for name in tables:
+        try:
+            pq.read_schema(version / f"{name}.parquet")
+        except Exception as exc:
+            raise OSError(
+                f"{version / f'{name}.parquet'} is unreadable: {exc}"
+            ) from exc
+
+    db = version / WAREHOUSE_FILE
+    if not db.is_file():
+        raise FileNotFoundError(f"{db} is missing - refusing to publish.")
+    with closing(sqlite3.connect(db, timeout=60.0)) as conn:
+        row = conn.execute("SELECT run_id FROM _publication WHERE id = 1").fetchone()
+    stamped = row[0] if row else None
+    if stamped != run_id:
+        # The database and the directory disagreeing about which run they are
+        # is the one thing a version-directory scheme cannot tolerate.
+        raise ValueError(
+            f"{db} is stamped {stamped!r}, not {run_id!r} - refusing to publish."
+        )
+    return version
+
+
+def publish_data_version(cfg: dict, run_id: str) -> Path:
+    """Make this data version the published one, by writing ONE file.
+
+    data/CURRENT is replaced with os.replace of a temp file, a single atomic
+    filesystem operation on POSIX and Windows alike. Before it, consumers see
+    the previous version in full; after it, this one. There is no state in
+    between, which is the entire point.
+    """
+    version = cfg["paths"]["data_runs"] / run_id
+    tmp = _data_current_file(cfg).with_suffix(".tmp")
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(run_id + "\n", encoding="utf-8")
+    os.replace(tmp, _data_current_file(cfg))
+    log.info("Published data version %s", run_id)
+    return version
+
+
+def prune_data_versions(cfg: dict, keep: int = 3) -> list[str]:
+    """Keep the newest `keep` data versions plus whatever CURRENT names.
+
+    Fewer than the report versions, because these are half a gigabyte each
+    rather than three markdown files. CURRENT is protected explicitly: a run
+    that fails after a successful one leaves a newer directory that is not
+    published.
+    """
+    root = cfg["paths"]["data_runs"]
+    if not root.is_dir():
+        return []
+    protected = {data_current_run_id(cfg)}
+    versions = sorted(
+        (d for d in root.iterdir() if d.is_dir()),
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    removed = []
+    for d in versions[keep:]:
+        if d.name in protected:
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        removed.append(d.name)
+    return removed
+
+
 def reports_dir(cfg: dict, run_id: str) -> Path:
     """This run's version directory: reports/runs/<run_id>/.
 
@@ -626,8 +765,8 @@ def warehouse_run_id(cfg: dict) -> str | None:
     data is - no window. This is the authority for "did this run publish";
     the marker file below is a fallback for a load() called without a run_id.
     """
-    db = cfg["paths"]["warehouse"]
-    if not db.exists():
+    db = warehouse_path(cfg)
+    if db is None or not db.exists():
         return None
     try:
         with closing(sqlite3.connect(db, timeout=60.0)) as conn:
@@ -776,7 +915,12 @@ def finalize_reports(cfg: dict, run_id: str) -> str:
     if not version.is_dir():
         return "noop"  # already archived - this is a retry
 
-    if warehouse_run_id(cfg) == run_id:
+    # data/CURRENT, not the SQLite stamp. The stamp says "this database is
+    # tonight's", which stayed true even when the Parquet rename loop had
+    # half-finished - so the reports advanced over an analytics layer that was
+    # a mixture of two runs. The data pointer says "this whole version is
+    # published", which is what the reports have to agree with.
+    if data_current_run_id(cfg) == run_id:
         publish_version(cfg, run_id)
         return "published"
 
@@ -839,26 +983,46 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) 
     fact keys silently resolving against the wrong dimension rows and no error
     anywhere. Verified against pandas 3.0.2's own source.
     """
-    out = cfg["paths"]["processed"]
-    out.mkdir(parents=True, exist_ok=True)
-    cfg["paths"]["warehouse"].parent.mkdir(parents=True, exist_ok=True)
+    if run_id is None:
+        # Every publish is a version, and a version needs a name. Callers that
+        # do not supply one get a local one rather than a silent write into
+        # whatever the last version was.
+        run_id = f"load_{datetime.now(timezone.utc):%Y%m%dT%H%M%S%f}"
+    out = data_version_dir(cfg, run_id)
 
-    # 1. Parquet to sidecars - written now, published only after SQLite commits.
     retired: list[str] = []
-    staged: list[tuple[Path, Path]] = []
-    for name, df in tables.items():
-        tmp = out / f"{name}.parquet.tmp"
-        df.to_parquet(tmp, index=False, compression="snappy")
-        staged.append((tmp, out / f"{name}.parquet"))
-
-    # timeout: the DAG runs measure_adoption as a branch parallel to the
-    # merchandising chain, so two tasks can call load() against this file at
-    # once. Writing the star schema holds the write lock for ~4 s, and the
-    # sqlite3 default timeout is 5 s - a margin thin enough that a slower disk
-    # or a larger extract turns into "database is locked". WAL lets the readers
-    # through and the explicit timeout gives the writers room to queue.
     try:
-        with closing(sqlite3.connect(cfg["paths"]["warehouse"], timeout=60.0)) as conn:
+        # 1. Straight into this run's version directory. Nothing written here
+        #    is visible to a consumer, because consumers resolve data/CURRENT
+        #    and CURRENT still names the previous version. There is no rename
+        #    loop over the published directory any more - that loop was N
+        #    chances to half-succeed, and injecting an OSError into the second
+        #    rename produced exactly that: tonight's facts beside last night's
+        #    dimensions, published, with the run reported as a success.
+        for name, df in tables.items():
+            df.to_parquet(out / f"{name}.parquet", index=False, compression="snappy")
+
+        # timeout: the DAG runs measure_adoption as a branch parallel to the
+        # merchandising chain, so two tasks can call load() against this file
+        # at once. Writing the star schema holds the write lock for ~4 s, and
+        # the sqlite3 default timeout is 5 s - a margin thin enough that a
+        # slower disk or a larger extract turns into "database is locked". WAL
+        # lets the readers through and the explicit timeout gives the writers
+        # room to queue.
+        db = out / WAREHOUSE_FILE
+        # Seeded from the currently published database so retirement still sees
+        # what the previous run published. A fresh file every run would make
+        # every table look new and nothing look retired.
+        previous_db = warehouse_path(cfg)
+        if previous_db is not None and previous_db.is_file() and not db.exists():
+            shutil.copyfile(previous_db, db)
+        elif not db.exists() and cfg["paths"]["warehouse"].is_file():
+            # First run after the move to versioned data: carry the old
+            # fixed-path database in, so its _published manifest still drives
+            # retirement.
+            shutil.copyfile(cfg["paths"]["warehouse"], db)
+
+        with closing(sqlite3.connect(db, timeout=60.0)) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
 
             # 2. Load into __new tables, under sqlite3's default transaction
@@ -977,32 +1141,26 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) 
                 conn.execute("ROLLBACK")
                 raise
     except BaseException:
-        for tmp, _ in staged:  # publish nothing on the way out
-            tmp.unlink(missing_ok=True)
-        # pandas commits each `<name>__new` before the swap transaction opens,
-        # so a rollback leaves them in the database - a partial run's rows,
-        # visible to anything that lists tables. Observed after a failed load:
-        # fact_sales__new sitting alongside the real table.
-        try:
-            with closing(
-                sqlite3.connect(cfg["paths"]["warehouse"], timeout=60.0)
-            ) as c2:
-                for name in tables:
-                    c2.execute(f'DROP TABLE IF EXISTS "{name}__new"')
-                c2.commit()
-        except sqlite3.Error:
-            pass  # the original failure is the one worth raising
+        # The whole version goes. Nothing in it was ever visible - CURRENT
+        # still names the previous one - so there is nothing to roll back,
+        # only something to delete. That is the difference a version directory
+        # makes: the failure path used to have to unpick a half-finished
+        # publish out of the directory consumers were reading.
+        shutil.rmtree(out, ignore_errors=True)
         raise
 
-    # 6. SQLite is committed; publish Parquet, and remove the Parquet of any
-    #    table retired above. Both layers retire together or the analytics
-    #    directory keeps serving a file the warehouse no longer has.
-    for tmp, final in staged:
-        os.replace(tmp, final)
-    for gone in retired:
-        # Unconditional: `retired` is what we no longer publish, not what
-        # SQLite happened to still hold.
-        (out / f"{gone}.parquet").unlink(missing_ok=True)
+    # 6. The version is written. Retirement needs no Parquet deletion any
+    #    more - a retired table is simply not among the files written into this
+    #    version, so it stops being published the moment CURRENT moves. The two
+    #    layers cannot retire out of step because they are one directory.
+    if retired:
+        log.info("Not carried into this version: %s", ", ".join(retired))
+
+    # 7. Verify, then flip one pointer. Everything before this is invisible;
+    #    everything after it is published, in full.
+    verify_data_version(cfg, run_id, tables)
+    publish_data_version(cfg, run_id)
+    prune_data_versions(cfg)
     log.info("Loaded %s tables to Parquet and SQLite", len(tables))
 
 

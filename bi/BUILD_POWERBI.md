@@ -332,8 +332,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt      # pandas, numpy, pyarrow, scikit-learn, PyYAML, pytest
 python scripts\get_data.py           # ~45 MB into data\raw - not in git
-python -m retail_pipeline.pipeline   # ~12 s; writes data\processed\*.parquet
-                                     # and data\warehouse\retail.db
+python -m retail_pipeline.pipeline   # ~12 s; publishes data\runs\<run_id>\
+                                     # and moves data\CURRENT
 pytest -q                            # green before regenerating
 python -m bi.build_star_schema       # rewrites bi\model\*.csv
 ```
