@@ -594,12 +594,51 @@ def data_version_dir(cfg: dict, run_id: str) -> Path:
     return d
 
 
+def new_data_version(cfg: dict, run_id: str) -> Path:
+    """A directory for THIS attempt, guaranteed not to be a published one.
+
+    data_version_dir() derives the path from run_id alone and mkdirs it, which
+    is safe only while run_id names a version that has never been published.
+    In Airflow that is false on the second attempt: `context["run_id"]` is
+    constant across every retry of a DAG run and across an operator clearing
+    the task, which the DAG's own docstring recommends as the remedy for a
+    failed publish. So a retry of `publish` re-entered load() pointing at the
+    LIVE directory, rewrote its Parquet in place, ran the swap against the
+    published database - and on failure rmtree'd the whole thing while
+    data/CURRENT still named it. Reproduced: data/CURRENT naming a directory
+    that no longer exists, published_data_dir() and warehouse_run_id() both
+    None, and the previous good version not restored because the pointer was
+    never moved back.
+
+    A published version is immutable. A retry produces a NEW version - which is
+    what versioning is for - so this takes the first free name and never reuses
+    one. exist_ok=False rather than a pre-check, so two processes racing get
+    different directories instead of the same one.
+    """
+    root = cfg["paths"]["data_runs"]
+    root.mkdir(parents=True, exist_ok=True)
+    attempt, name = 1, run_id
+    while True:
+        try:
+            (root / name).mkdir(exist_ok=False)
+            return root / name
+        except FileExistsError:
+            attempt += 1
+            name = f"{run_id}__{attempt}"
+
+
 def _data_current_file(cfg: dict) -> Path:
     return cfg["paths"]["data_runs"].parent / "CURRENT"
 
 
 def data_current_run_id(cfg: dict) -> str | None:
-    """The run_id data/CURRENT names, or None if nothing is published."""
+    """The DIRECTORY data/CURRENT names, or None if nothing is published.
+
+    This is a directory name, which is the run_id only on a run's first
+    attempt - a retry publishes `<run_id>__2`. For "which logical run is
+    published", use warehouse_run_id(), which reads the stamp written inside
+    the version's own database.
+    """
     f = _data_current_file(cfg)
     if not f.exists():
         return None
@@ -626,7 +665,9 @@ def warehouse_path(cfg: dict) -> Path | None:
     return None if d is None else d / WAREHOUSE_FILE
 
 
-def verify_data_version(cfg: dict, run_id: str, tables) -> Path:
+def verify_data_version(
+    cfg: dict, version_name: str, tables, run_id: str | None = None
+) -> Path:
     """Every file present, readable, and the database stamped with this run.
 
     Checked before the pointer moves, because after it moves is too late. The
@@ -634,7 +675,8 @@ def verify_data_version(cfg: dict, run_id: str, tables) -> Path:
     or a disk that filled leaves a file of the right name and the wrong
     contents, and `exists()` is happy with both.
     """
-    version = data_version_dir(cfg, run_id)
+    version = cfg["paths"]["data_runs"] / version_name
+    run_id = run_id or version_name
     missing = [n for n in tables if not (version / f"{n}.parquet").is_file()]
     if missing:
         raise FileNotFoundError(
@@ -664,20 +706,23 @@ def verify_data_version(cfg: dict, run_id: str, tables) -> Path:
     return version
 
 
-def publish_data_version(cfg: dict, run_id: str) -> Path:
+def publish_data_version(cfg: dict, version_name: str) -> Path:
     """Make this data version the published one, by writing ONE file.
 
     data/CURRENT is replaced with os.replace of a temp file, a single atomic
     filesystem operation on POSIX and Windows alike. Before it, consumers see
     the previous version in full; after it, this one. There is no state in
     between, which is the entire point.
+
+    Takes the DIRECTORY name, which is the run_id only on a run's first
+    attempt - see new_data_version().
     """
-    version = cfg["paths"]["data_runs"] / run_id
+    version = cfg["paths"]["data_runs"] / version_name
     tmp = _data_current_file(cfg).with_suffix(".tmp")
     tmp.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(run_id + "\n", encoding="utf-8")
+    tmp.write_text(version_name + "\n", encoding="utf-8")
     os.replace(tmp, _data_current_file(cfg))
-    log.info("Published data version %s", run_id)
+    log.info("Published data version %s", version_name)
     return version
 
 
@@ -759,11 +804,14 @@ def published_reports(cfg: dict) -> Path | None:
 
 
 def warehouse_run_id(cfg: dict) -> str | None:
-    """The run_id the warehouse itself says it holds, or None.
+    """The LOGICAL run whose version is published, or None.
 
-    Written inside load()'s swap transaction, so it is true the instant the
-    data is - no window. This is the authority for "did this run publish";
-    the marker file below is a fallback for a load() called without a run_id.
+    Two things have to be true for this to answer, and both matter: data/CURRENT
+    has to name a directory that exists, and that directory's database has to
+    carry a run_id stamped inside load()'s own swap transaction. So it means
+    "a complete, verified version for this run is what consumers are reading" -
+    which is exactly the question the report finaliser needs answered, and is
+    not the same as the directory name, since a retry publishes `<run_id>__2`.
     """
     db = warehouse_path(cfg)
     if db is None or not db.exists():
@@ -791,10 +839,19 @@ def mark_published(cfg: dict, run_id: str) -> None:
     # warehouse already carries the run_id that authorises publishing, so this
     # file changes nothing about whether the run succeeded. Letting it raise
     # turned a full, committed run into a failed one over a diagnostic write.
-    try:
-        (reports_dir(cfg, run_id) / PUBLISHED_MARKER).write_text(
-            run_id + "\n", encoding="utf-8"
+    version = _version_root(cfg) / run_id
+    if not version.is_dir():
+        # Do not conjure the directory. An empty runs/<run_id>/ holding only
+        # this marker is indistinguishable from a version whose reports were
+        # lost, and it is what made the finaliser raise instead of recovering.
+        log.warning(
+            "No report version for %s to mark; its reports were archived or "
+            "never written.",
+            run_id,
         )
+        return
+    try:
+        (version / PUBLISHED_MARKER).write_text(run_id + "\n", encoding="utf-8")
     except OSError as exc:
         log.warning(
             "Could not write the %s marker for %s (%s). The warehouse stamp is "
@@ -879,6 +936,37 @@ def keep_failed_reports(cfg: dict, run_id: str) -> Path | None:
     return dest
 
 
+def _restore_archived_reports(cfg: dict, run_id: str) -> None:
+    """Bring a version back from failed_runs/ when its data later publishes.
+
+    keep_failed_reports MOVES the directory out of runs/, and nothing moved it
+    back. So: publish fails, the finaliser archives the reports, the operator
+    fixes the cause and clears `publish` - which the DAG docstring recommends -
+    and the publish succeeds. mark_published then recreated runs/<run_id>/
+    containing only the marker, and the finaliser raised FileNotFoundError on
+    every retry, permanently. The warehouse held the new run, reports/CURRENT
+    was stuck on the previous one, and this run's real reports sat in
+    failed_runs labelled a failure.
+
+    Only ever called once the data for this run IS published, so restoring
+    cannot resurrect a version that should have stayed archived.
+    """
+    version = _version_root(cfg) / run_id
+    archived = cfg["paths"]["reports"] / "failed_runs" / run_id
+    if not archived.is_dir():
+        return
+    if all((version / n).is_file() for n in REPORT_NAMES):
+        return  # the live version is complete; leave the archive alone
+    for name in (*REPORT_NAMES, PUBLISHED_MARKER):
+        src = archived / name
+        if src.is_file():
+            version.mkdir(parents=True, exist_ok=True)
+            os.replace(src, version / name)
+    if not any(archived.iterdir()):
+        archived.rmdir()
+    log.info("Restored %s from failed_runs - its data has since published", run_id)
+
+
 def finalize_reports(cfg: dict, run_id: str) -> str:
     """Decide what becomes of this run's version. Safe to run twice.
 
@@ -912,17 +1000,26 @@ def finalize_reports(cfg: dict, run_id: str) -> str:
     version = _version_root(cfg) / run_id
     if current_run_id(cfg) == run_id:
         return "noop"  # already published - this is a retry
-    if not version.is_dir():
-        return "noop"  # already archived - this is a retry
 
-    # data/CURRENT, not the SQLite stamp. The stamp says "this database is
-    # tonight's", which stayed true even when the Parquet rename loop had
-    # half-finished - so the reports advanced over an analytics layer that was
-    # a mixture of two runs. The data pointer says "this whole version is
-    # published", which is what the reports have to agree with.
-    if data_current_run_id(cfg) == run_id:
+    # The published-data check comes FIRST, before "already archived". A run
+    # whose publish failed has its reports archived by this function; if the
+    # operator then fixes the cause and clears `publish` - which the DAG
+    # docstring recommends - the data publishes and this has to be able to
+    # bring those reports back. Ordered the other way it returned "noop" on
+    # the archived directory and reports/CURRENT stayed a run behind forever.
+    #
+    # warehouse_run_id, not data_current_run_id: the first is the LOGICAL run
+    # stamped inside the published version's own database, the second is a
+    # directory name, and a retry publishes `<run_id>__2`. Both require a
+    # complete verified version to be published, which is the property the
+    # reports must agree with.
+    if warehouse_run_id(cfg) == run_id:
+        _restore_archived_reports(cfg, run_id)
         publish_version(cfg, run_id)
         return "published"
+
+    if not version.is_dir():
+        return "noop"  # already archived, and its data never published
 
     if (version / PUBLISHED_MARKER).exists():
         # It published, and the warehouse has since moved on. Not a failure,
@@ -988,7 +1085,9 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) 
         # do not supply one get a local one rather than a silent write into
         # whatever the last version was.
         run_id = f"load_{datetime.now(timezone.utc):%Y%m%dT%H%M%S%f}"
-    out = data_version_dir(cfg, run_id)
+    # A NEW directory every attempt. Never the published one: see
+    # new_data_version().
+    out = new_data_version(cfg, run_id)
 
     retired: list[str] = []
     try:
@@ -1158,8 +1257,8 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) 
 
     # 7. Verify, then flip one pointer. Everything before this is invisible;
     #    everything after it is published, in full.
-    verify_data_version(cfg, run_id, tables)
-    publish_data_version(cfg, run_id)
+    verify_data_version(cfg, out.name, tables, run_id=run_id)
+    publish_data_version(cfg, out.name)
     prune_data_versions(cfg)
     log.info("Loaded %s tables to Parquet and SQLite", len(tables))
 

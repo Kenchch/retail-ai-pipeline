@@ -5,7 +5,8 @@ Power BI semantic model. The two are not the same thing, and the gap between
 them is where most of the decisions below live.
 
 Built by [`build_star_schema.py`](build_star_schema.py) from
-`data/processed/*.parquet`; output in [`model/`](model/) as CSV.
+the published data version (`data/runs/<run_id>/*.parquet`, named by
+`data/CURRENT`); output in [`model/`](model/) as CSV.
 Measures in [`measures.dax`](measures.dax). Build instructions in
 [`BUILD_POWERBI.md`](BUILD_POWERBI.md).
 
