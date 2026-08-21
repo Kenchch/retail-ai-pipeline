@@ -2,8 +2,9 @@
 
     python -m bi.build_star_schema
 
-Reads `data/processed/*.parquet` (produced by `retail_pipeline.pipeline`) and
-writes a BI-ready dimensional model to `bi/model/*.csv`.
+Reads the published data version - `data/runs/<run_id>/*.parquet`, resolved
+through the `data/CURRENT` pointer, so this cannot see a half-finished publish
+- and writes a BI-ready dimensional model to `bi/model/*.csv`.
 
 The pipeline already publishes a star schema. It is a *warehouse* star, not a
 *semantic* one, and the difference is the whole point of this module:

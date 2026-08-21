@@ -1409,3 +1409,132 @@ def test_the_pointer_only_moves_when_the_version_verifies(cfg, tmp_path):
     with pytest.raises(ValueError, match="is stamped 'run_two'"):
         P.verify_data_version(cfg, "run_three", {"fact_sales": frame})
     assert P.data_current_run_id(cfg) == "run_two"
+
+
+def test_a_retry_under_the_same_run_id_cannot_destroy_the_published_version(
+    cfg, tmp_path
+):
+    """FAULT INJECTION: the publish is retried, and fails again.
+
+    Airflow's `context["run_id"]` is constant across every attempt of a DAG run
+    and across an operator clearing the task - which the DAG docstring
+    recommends as the remedy for a failed publish. load() derived its working
+    directory from run_id alone and mkdir'd it, so attempt 2 pointed straight
+    at the LIVE published directory: it rewrote the published Parquet in place,
+    ran its swap against the published database, and on failure rmtree'd the
+    whole thing while data/CURRENT still named it.
+
+    The result was not "the previous run survives". It was data/CURRENT naming
+    a directory that no longer existed - published_data_dir(), warehouse_path()
+    and warehouse_run_id() all None, bi/build_star_schema.py exiting "nothing
+    is published yet", and no way back because the pointer was never moved.
+    """
+    cfg = _warehouse_cfg(cfg, tmp_path)
+    rid = "scheduled__2026-08-21"
+    names = ("fact_sales", "dim_product", "quarantine")
+
+    def tables(marker):
+        return {
+            n: pd.DataFrame(
+                {"invoice_no": [marker], "stock_code": ["S"], "date_key": ["d"]}
+            )
+            for n in names
+        }
+
+    P.load(tables("GOOD"), cfg, run_id=rid)
+    assert P.data_current_run_id(cfg) == rid
+
+    real = pd.DataFrame.to_parquet
+    calls = {"n": 0}
+
+    def flaky(self, path, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("the retry hit the same disk problem")
+        return real(self, path, *a, **k)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pd.DataFrame, "to_parquet", flaky)
+        with pytest.raises(OSError, match="same disk problem"):
+            P.load(tables("RETRY"), cfg, run_id=rid)
+
+    assert P.published_data_dir(cfg) is not None, "the published version was deleted"
+    assert P.warehouse_run_id(cfg) == rid
+    for name in names:
+        assert _published(cfg, name)["invoice_no"][0] == "GOOD"
+
+
+def test_a_retry_that_succeeds_publishes_a_new_version(cfg, tmp_path):
+    """A published version is immutable, so a retry produces a new one rather
+    than writing into the directory consumers are reading."""
+    cfg = _warehouse_cfg(cfg, tmp_path)
+    rid = "scheduled__2026-08-21"
+    frame = pd.DataFrame({"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["d"]})
+
+    P.load({"fact_sales": frame}, cfg, run_id=rid)
+    first = P.published_data_dir(cfg)
+
+    P.load({"fact_sales": frame}, cfg, run_id=rid)
+    second = P.published_data_dir(cfg)
+
+    assert first != second
+    assert second.name == f"{rid}__2"
+    assert first.is_dir(), "the previous version was overwritten in place"
+    # The LOGICAL run is unchanged, which is what the report finaliser reads.
+    assert P.warehouse_run_id(cfg) == rid
+
+
+def test_reports_archived_by_a_failed_publish_come_back_when_it_succeeds(cfg, tmp_path):
+    """finalize_reports archives a version by MOVING it out of runs/, and
+    nothing moved it back.
+
+    So: publish fails, the finaliser archives the reports, the operator fixes
+    the cause and clears `publish`, and it succeeds. The finaliser then raised
+    FileNotFoundError on every retry - permanently - because the reports were
+    in failed_runs/ and mark_published had recreated runs/<run_id>/ holding
+    only the marker. The warehouse was on the new run, reports/CURRENT stuck on
+    the previous one, and this run's real reports filed as a failure.
+    """
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
+    frame = pd.DataFrame({"invoice_no": ["B"], "stock_code": ["S"], "date_key": ["d"]})
+
+    _fill_version(cfg, "run_a", marker="old")
+    P.load({"fact_sales": frame}, cfg, run_id="run_a")
+    assert finalize_reports(cfg, "run_a") == "published"
+
+    # Run B computes its reports, then the publish fails.
+    _fill_version(cfg, "run_b", marker="new")
+    assert finalize_reports(cfg, "run_b") == "failed"
+    assert (cfg["paths"]["reports"] / "failed_runs" / "run_b").is_dir()
+    assert current_run_id(cfg) == "run_a"
+
+    # The operator clears `publish`; this time it works.
+    P.load({"fact_sales": frame}, cfg, run_id="run_b")
+    P.mark_published(cfg, "run_b")
+
+    assert finalize_reports(cfg, "run_b") == "published"
+    assert current_run_id(cfg) == "run_b"
+    for name in REPORT_NAMES:
+        assert (
+            (published_reports(cfg) / name)
+            .read_text(encoding="utf-8")
+            .startswith("new")
+        )
+    assert not (cfg["paths"]["reports"] / "failed_runs" / "run_b").exists()
+
+
+def test_a_version_archived_for_good_is_not_resurrected(cfg, tmp_path):
+    """The restore only fires once the data for that run IS published. A run
+    that simply failed must stay archived, however often the finaliser runs."""
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
+    frame = pd.DataFrame({"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["d"]})
+    _fill_version(cfg, "run_a", marker="old")
+    P.load({"fact_sales": frame}, cfg, run_id="run_a")
+    finalize_reports(cfg, "run_a")
+
+    _fill_version(cfg, "run_b", marker="new")
+    assert finalize_reports(cfg, "run_b") == "failed"
+    for _ in range(3):
+        assert finalize_reports(cfg, "run_b") == "noop"
+    assert current_run_id(cfg) == "run_a"
+    assert (cfg["paths"]["reports"] / "failed_runs" / "run_b").is_dir()
