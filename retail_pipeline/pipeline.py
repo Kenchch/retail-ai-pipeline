@@ -627,6 +627,73 @@ def new_data_version(cfg: dict, run_id: str) -> Path:
             name = f"{run_id}__{attempt}"
 
 
+MANIFEST_FILE = "CURRENT.json"
+
+
+def _manifest_file(cfg: dict) -> Path:
+    return cfg["paths"]["published"] / MANIFEST_FILE
+
+
+def published_manifest(cfg: dict) -> dict | None:
+    """What is published, as ONE record. The authority for every consumer.
+
+    There used to be two pointers - data/CURRENT and reports/CURRENT - flipped
+    one after the other, so between them a consumer saw tonight's warehouse
+    beside last night's reports. No transaction spans two files, so the fix is
+    not to order the writes better but to stop having two: one manifest names
+    the data version, the report version and the run they both belong to, and
+    it is replaced with a single os.replace.
+
+    data/CURRENT and reports/CURRENT are still written, as compatibility caches
+    and as the internal signal that each tree passed verification. Nothing
+    authoritative reads them; see published_data_dir and published_reports.
+    """
+    f = _manifest_file(cfg)
+    if not f.exists():
+        return None
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _reports_complete(cfg: dict, run_id: str) -> bool:
+    version = cfg["paths"]["reports"] / "runs" / run_id
+    return all((version / name).is_file() for name in REPORT_NAMES)
+
+
+def publish_run(
+    cfg: dict, run_id: str, data_version: str, reports_version: str | None
+) -> Path:
+    """Bind both trees to one run and make them visible in one write.
+
+    Everything has already been verified by the time this is called: the data
+    version by verify_data_version, the report version by the completeness
+    check in publish_version. This is the moment they become readable, and it
+    is a single atomic filesystem operation.
+    """
+    manifest = {
+        "run_id": run_id,
+        "data": f"runs/{data_version}",
+        # None only when nothing complete exists to bind - a bare load() with
+        # no reports written. run() and the DAG both build the report version
+        # BEFORE the data is published, so in the pipeline this is always set
+        # and the two trees become visible in the same write.
+        "reports": None if reports_version is None else f"runs/{reports_version}",
+        "warehouse": f"runs/{data_version}/{WAREHOUSE_FILE}",
+        "published_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    target = _manifest_file(cfg)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    os.replace(tmp, target)
+    log.info(
+        "Published run %s (data %s, reports %s)", run_id, data_version, reports_version
+    )
+    return target
+
+
 def _data_current_file(cfg: dict) -> Path:
     return cfg["paths"]["data_runs"].parent / "CURRENT"
 
@@ -652,10 +719,10 @@ def published_data_dir(cfg: dict) -> Path | None:
     goes through here rather than at a fixed directory, so it cannot observe a
     half-swapped set.
     """
-    run_id = data_current_run_id(cfg)
-    if run_id is None:
+    manifest = published_manifest(cfg)
+    if manifest is None:
         return None
-    d = cfg["paths"]["data_runs"] / run_id
+    d = cfg["paths"]["data_runs"].parent / manifest["data"]
     return d if d.is_dir() else None
 
 
@@ -796,11 +863,41 @@ def published_reports(cfg: dict) -> Path | None:
     so it can never observe a half-swapped set: CURRENT names the old version
     or the new one, never a mixture.
     """
-    run_id = current_run_id(cfg)
-    if run_id is None:
+    manifest = published_manifest(cfg)
+    if manifest is None or manifest.get("reports") is None:
         return None
-    d = _version_root(cfg) / run_id
+    d = cfg["paths"]["reports"] / manifest["reports"]
     return d if d.is_dir() else None
+
+
+def _stamped_run_id(db: Path) -> str | None:
+    """The run_id inside a version's own database, or None."""
+    if not db.is_file():
+        return None
+    try:
+        with closing(sqlite3.connect(db, timeout=60.0)) as conn:
+            row = conn.execute(
+                "SELECT run_id FROM _publication WHERE id = 1"
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
+
+
+def staged_data_run_id(cfg: dict) -> str | None:
+    """The run whose data version has been built and verified, but which may
+    not yet be visible to consumers.
+
+    data/CURRENT is the INTERNAL signal that a data version passed
+    verify_data_version. The report finaliser needs it, because it has to
+    decide whether to publish before anything is published - asking the
+    manifest here would be circular, since the manifest is what it is about to
+    write.
+    """
+    name = data_current_run_id(cfg)
+    if name is None:
+        return None
+    return _stamped_run_id(cfg["paths"]["data_runs"] / name / WAREHOUSE_FILE)
 
 
 def warehouse_run_id(cfg: dict) -> str | None:
@@ -912,6 +1009,17 @@ def publish_version(cfg: dict, run_id: str) -> Path:
     tmp.write_text(run_id + "\n", encoding="utf-8")
     os.replace(tmp, _current_file(cfg))
     _snapshot_for_readers(cfg, version)
+    # The manifest is the authority, so making a report version current means
+    # updating it. The data pointer is carried across untouched: load() has
+    # already bound this run's data, and rewriting it here would let a report
+    # publish silently move the warehouse.
+    existing = published_manifest(cfg) or {}
+    publish_run(
+        cfg,
+        run_id,
+        (existing.get("data") or f"runs/{run_id}").removeprefix("runs/"),
+        run_id,
+    )
     log.info("Published report version %s", run_id)
     return version
 
@@ -1038,8 +1146,10 @@ def finalize_reports(cfg: dict, run_id: str) -> str:
     # directory name, and a retry publishes `<run_id>__2`. Both require a
     # complete verified version to be published, which is the property the
     # reports must agree with.
-    if warehouse_run_id(cfg) == run_id:
+    if staged_data_run_id(cfg) == run_id:
         _restore_archived_reports(cfg, run_id)
+        # Both trees are verified complete by the two calls below, and only
+        # then does ONE write make them visible together.
         publish_version(cfg, run_id)
         return "published"
 
@@ -1098,6 +1208,36 @@ def _write_parquet(tables: dict[str, pd.DataFrame], out: Path) -> None:
         df.to_parquet(out / f"{name}.parquet", index=False, compression="snappy")
 
 
+def _copy_database(source: Path, dest: Path) -> None:
+    """Snapshot a SQLite database with the backup API, not shutil.copyfile.
+
+    These databases run in WAL mode, and a `.db` file is only the whole
+    database once the write-ahead log has been checkpointed into it. The last
+    connection to close normally does that, so in a clean sequence there is no
+    `-wal` left to miss - which is exactly why copying looked safe. But any
+    concurrent reader keeps the log alive: Power BI, bi/build_star_schema.py,
+    warehouse_run_id(), or a person with a sqlite3 shell open.
+
+    Copying the file alone in that state does not lose a few recent rows. It
+    loses everything since the last checkpoint, including the schema:
+
+        committed rows in source : 1000
+        -wal present             : True
+        rows after copyfile      : ERROR: no such table: t
+        rows after .backup()     : 1000
+
+    The seed exists to carry the previous version's _published manifest
+    forward, so a truncated copy would make every table look new and nothing
+    look retired. backup() reads through the log and produces a consistent
+    snapshot whatever else is attached.
+    """
+    with (
+        closing(sqlite3.connect(source, timeout=60.0)) as src,
+        closing(sqlite3.connect(dest, timeout=60.0)) as dst,
+    ):
+        src.backup(dst)
+
+
 def _seed_warehouse(cfg: dict, out: Path) -> Path:
     # timeout: the DAG runs measure_adoption as a branch parallel to the
     # merchandising chain, so two tasks can call load() against this file
@@ -1112,12 +1252,12 @@ def _seed_warehouse(cfg: dict, out: Path) -> Path:
     # every table look new and nothing look retired.
     previous_db = warehouse_path(cfg)
     if previous_db is not None and previous_db.is_file() and not db.exists():
-        shutil.copyfile(previous_db, db)
+        _copy_database(previous_db, db)
     elif not db.exists() and cfg["paths"]["warehouse"].is_file():
         # First run after the move to versioned data: carry the old
         # fixed-path database in, so its _published manifest still drives
         # retirement.
-        shutil.copyfile(cfg["paths"]["warehouse"], db)
+        _copy_database(cfg["paths"]["warehouse"], db)
     return db
 
 
@@ -1305,6 +1445,12 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) 
     #    everything after it is published, in full.
     verify_data_version(cfg, out.name, tables, run_id=run_id)
     publish_data_version(cfg, out.name)
+    # ONE write makes both trees visible. The report version is bound here when
+    # it is already complete, which in run() and the DAG it always is - both
+    # build it before the data is published, precisely so this can be atomic.
+    publish_run(
+        cfg, run_id, out.name, run_id if _reports_complete(cfg, run_id) else None
+    )
     prune_data_versions(cfg)
     log.info("Loaded %s tables to Parquet and SQLite", len(tables))
 

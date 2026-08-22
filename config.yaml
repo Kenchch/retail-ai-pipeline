@@ -3,6 +3,7 @@
 paths:
   raw: data/raw/online_retail.csv
   usage_events: data/raw/usage_events.csv
+  published: published           # CURRENT.json - the one authoritative pointer
   data_runs: data/runs           # one directory per run: parquet + retail.db
   processed: data/processed      # legacy path, kept for the pre-version layout
   staging: data/staging          # DAG hand-off only - never published

@@ -3,7 +3,8 @@
     python -m bi.build_star_schema
 
 Reads the published data version - `data/runs/<run_id>/*.parquet`, resolved
-through the `data/CURRENT` pointer, so this cannot see a half-finished publish
+through the `published/CURRENT.json` manifest, so this cannot see a
+half-finished publish, nor data from a different run than the reports
 - and writes a BI-ready dimensional model to `bi/model/*.csv`.
 
 The pipeline already publishes a star schema. It is a *warehouse* star, not a
@@ -47,7 +48,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _published_src() -> Path:
-    """The data version data/CURRENT names.
+    """The data version the published manifest names.
 
     Not a fixed directory. The pipeline publishes each run into
     data/runs/<run_id>/ and moves one pointer, so reading the pointer is what
@@ -60,9 +61,9 @@ def _published_src() -> Path:
     src = published_data_dir(load_config())
     if src is None:
         raise SystemExit(
-            "nothing is published yet - data/CURRENT is missing or names a "
-            "version that is not there. Run `python -m retail_pipeline.pipeline` "
-            "first."
+            "nothing is published yet - published/CURRENT.json is missing or "
+            "names a version that is not there. Run "
+            "`python -m retail_pipeline.pipeline` first."
         )
     return src
 

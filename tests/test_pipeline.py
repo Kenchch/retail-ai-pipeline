@@ -1583,3 +1583,94 @@ def test_a_rebuilt_report_is_not_overwritten_by_the_archived_one(cfg, tmp_path):
     assert (
         cfg["paths"]["reports"] / "failed_runs" / run_id / "data_quality_report.md"
     ).is_file()
+
+
+def test_copying_a_database_with_a_live_write_ahead_log_keeps_everything(tmp_path):
+    """The seed carries the previous version's manifest forward.
+
+    It did that with shutil.copyfile. These databases run in WAL mode, and a
+    `.db` file is only the whole database once the log has been checkpointed
+    into it. Copy the file while a log is live and you do not lose a few recent
+    rows - you lose everything since the last checkpoint, schema included:
+
+        committed rows in source : 1000
+        -wal present             : True
+        rows after copyfile      : ERROR: no such table: t
+        rows after .backup()     : 1000
+
+    A truncated seed would make every table look new and nothing look retired.
+
+    HONEST SCOPE: the production path does not currently reach this. Each
+    version's database is private to its own load(), whose connection is the
+    last to close, so SQLite checkpoints and removes the log on the way out.
+    This is the invariant "nobody holds the published database open while the
+    next run seeds from it" - which nothing enforces, and which a published
+    SQLite warehouse actively invites somebody to break: an operator with a
+    sqlite3 shell, or any consumer that queries it rather than the Parquet.
+    backup() removes the dependency at no cost.
+    """
+    import sqlite3
+
+    source = tmp_path / "source.db"
+    conn = sqlite3.connect(source)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t (n INTEGER)")
+    conn.executemany("INSERT INTO t VALUES (?)", [(i,) for i in range(1000)])
+    conn.commit()
+    assert source.with_name("source.db-wal").exists(), (
+        "the fixture no longer leaves an uncheckpointed log"
+    )
+
+    try:
+        dest = tmp_path / "dest.db"
+        P._copy_database(source, dest)
+        with sqlite3.connect(dest) as c:
+            assert c.execute("SELECT count(*) FROM t").fetchone()[0] == 1000
+    finally:
+        conn.close()
+
+
+def test_the_data_and_the_reports_become_visible_in_one_write(cfg, tmp_path):
+    """There used to be two pointers, flipped one after the other.
+
+    data/CURRENT moved when load() finished and reports/CURRENT moved when the
+    finaliser ran, so between them a consumer saw tonight's warehouse beside
+    last night's reports. No transaction spans two files, so the fix is not to
+    order the writes better - it is to stop having two. One manifest names the
+    data version, the report version and the run they both belong to.
+    """
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
+    frame = pd.DataFrame({"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["d"]})
+
+    _fill_version(cfg, "run_a", marker="old")
+    P.load({"fact_sales": frame}, cfg, run_id="run_a")
+    assert finalize_reports(cfg, "run_a") == "published"
+
+    manifest = P.published_manifest(cfg)
+    assert manifest["run_id"] == "run_a"
+    assert manifest["data"] == "runs/run_a"
+    assert manifest["reports"] == "runs/run_a"
+
+    # Both resolvers go through it, so they cannot disagree about the run.
+    assert P.published_data_dir(cfg).name == "run_a"
+    assert published_reports(cfg).name == "run_a"
+    assert P.warehouse_path(cfg).parent.name == "run_a"
+
+
+def test_the_manifest_is_the_authority_not_the_legacy_pointers(cfg, tmp_path):
+    """data/CURRENT and reports/CURRENT are kept as compatibility caches and as
+    the internal signal that a tree verified. Corrupting them must not move
+    what a consumer sees."""
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
+    frame = pd.DataFrame({"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["d"]})
+    _fill_version(cfg, "run_a", marker="old")
+    P.load({"fact_sales": frame}, cfg, run_id="run_a")
+    finalize_reports(cfg, "run_a")
+
+    (cfg["paths"]["reports"] / "CURRENT").write_text("nonsense\n", encoding="utf-8")
+    (cfg["paths"]["data_runs"].parent / "CURRENT").write_text(
+        "junk\n", encoding="utf-8"
+    )
+
+    assert P.published_data_dir(cfg).name == "run_a"
+    assert published_reports(cfg).name == "run_a"
