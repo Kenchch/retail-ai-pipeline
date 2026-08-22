@@ -1538,3 +1538,48 @@ def test_a_version_archived_for_good_is_not_resurrected(cfg, tmp_path):
         assert finalize_reports(cfg, "run_b") == "noop"
     assert current_run_id(cfg) == "run_a"
     assert (cfg["paths"]["reports"] / "failed_runs" / "run_b").is_dir()
+
+
+def test_a_rebuilt_report_is_not_overwritten_by_the_archived_one(cfg, tmp_path):
+    """A gate failure archives the version; clearing the gate rebuilds only the
+    reports downstream of it - measure_adoption is a ROOT task and does not
+    re-run - so the live version comes back PARTIAL. Restoring must fill the
+    gap, not roll the whole thing back to the failed attempt.
+
+    Overwriting published the failed attempt's "GATE FAILED - NOTHING WAS
+    PUBLISHED" report as the current one, describing the rejected extract,
+    beside a run_metrics.json describing the data that DID publish.
+    """
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
+    run_id = "run_partial"
+
+    version = reports_dir(cfg, run_id)
+    (version / "data_quality_report.md").write_text(
+        "GATE FAILED - NOTHING WAS PUBLISHED\n", encoding="utf-8"
+    )
+    (version / "adoption_report.md").write_text(
+        "attempt-1 adoption\n", encoding="utf-8"
+    )
+    assert finalize_reports(cfg, run_id) == "failed"
+
+    # The operator clears the gate and its downstream. Adoption does not re-run.
+    version = reports_dir(cfg, run_id)
+    (version / "data_quality_report.md").write_text(
+        "the good report\n", encoding="utf-8"
+    )
+    (version / "run_metrics.json").write_text("{}\n", encoding="utf-8")
+
+    P._restore_archived_reports(cfg, run_id)
+
+    assert (version / "data_quality_report.md").read_text(encoding="utf-8") == (
+        "the good report\n"
+    ), "the archived GATE FAILED report overwrote the rebuilt one"
+    # The gap - adoption, which did not re-run - is filled from the archive.
+    assert (version / "adoption_report.md").read_text(encoding="utf-8") == (
+        "attempt-1 adoption\n"
+    )
+    # And the failed attempt's own diagnostics stay where an investigator left
+    # them, rather than being consumed by the recovery.
+    assert (
+        cfg["paths"]["reports"] / "failed_runs" / run_id / "data_quality_report.md"
+    ).is_file()
