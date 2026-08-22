@@ -7,6 +7,7 @@ regresses — bad rows just start flowing into the warehouse, which is why the
 tests exist.
 """
 
+import json
 import os
 import pathlib
 import shutil
@@ -39,8 +40,13 @@ HEADER = (
 
 
 @pytest.fixture()
-def cfg():
+def cfg(tmp_path):
     c = load_config()
+    # published/ holds CURRENT.json, and every test that publishes writes it.
+    # Left at the configured path that is the REPO's own published/ directory:
+    # one file shared by the whole suite, so what each test left behind was
+    # what the next one read, and a run of the suite mutated the working tree.
+    c["paths"] = dict(c["paths"], published=tmp_path / "published")
     c["quality"]["max_quarantine_rate"] = 1.0  # the sample below is mostly broken
     # The synthetic event frames here are dated around the launch, not around
     # config's pinned analysis date, so they measure back from their own newest
@@ -1674,3 +1680,75 @@ def test_the_manifest_is_the_authority_not_the_legacy_pointers(cfg, tmp_path):
 
     assert P.published_data_dir(cfg).name == "run_a"
     assert published_reports(cfg).name == "run_a"
+
+
+def test_a_traversing_run_id_cannot_delete_the_data_layer(cfg, tmp_path):
+    """run_id is chosen by whoever triggers the DAG, and it becomes a directory.
+
+    Airflow's allowed_run_id_pattern (default ^[A-Za-z0-9_.~:+-]+$) lists "."
+    as a literal, so ".." is a legal run_id. It then reaches this module
+    verbatim and is joined onto data/staging/ - and data/staging/.. is data/,
+    the directory holding every published version. The cleanup at the end of a
+    GREEN run is shutil.rmtree(..., ignore_errors=True), so the whole data
+    layer went, silently, on a run that reported success.
+
+    Measured before the fix: one published version in data/, rmtree on
+    staging/"..", and data/ no longer existed.
+    """
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
+    frame = pd.DataFrame({"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["d"]})
+    _fill_version(cfg, "run_a")
+    P.load({"fact_sales": frame}, cfg, run_id="run_a")
+    data_root = cfg["paths"]["data_runs"].parent
+    assert P.published_data_dir(cfg) is not None
+
+    with pytest.raises(ValueError, match="not a usable directory name"):
+        P.run_dir(cfg["paths"]["staging"], "..")
+
+    # The published version is still there, and still resolvable.
+    assert data_root.is_dir()
+    assert P.published_data_dir(cfg).name == "run_a"
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "..",
+        ".",
+        "../..",
+        "a/../..",
+        "/absolute",
+        "",
+        "-leading-dash",
+        ".hidden",
+        "with space",
+        "x" * 201,
+    ],
+)
+def test_run_id_must_be_a_plain_directory_name(cfg, tmp_path, run_id):
+    """Every path built from run_id goes through one gate, so one test covers
+    all of them. The first character has to be alphanumeric: the character
+    class alone admits "." and "..", which are the two that matter."""
+    with pytest.raises(ValueError):
+        P.run_dir(tmp_path, run_id)
+
+
+def test_a_manifest_pointing_outside_its_tree_is_refused_not_ignored(cfg, tmp_path):
+    """The manifest is ours, but it is still a file on disk that names a path.
+
+    Returning None here would tell a consumer "nothing is published" when the
+    truth is "the manifest is corrupt", and the two call for different
+    actions - so this raises instead.
+    """
+    cfg = _warehouse_cfg(_staged_cfg(cfg, tmp_path), tmp_path)
+    frame = pd.DataFrame({"invoice_no": ["A"], "stock_code": ["S"], "date_key": ["d"]})
+    _fill_version(cfg, "run_a")
+    P.load({"fact_sales": frame}, cfg, run_id="run_a")
+
+    manifest_file = cfg["paths"]["published"] / P.MANIFEST_FILE
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    manifest["data"] = "../../elsewhere"
+    manifest_file.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="resolves outside"):
+        P.published_data_dir(cfg)

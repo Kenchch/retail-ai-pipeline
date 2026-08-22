@@ -44,6 +44,7 @@ from retail_pipeline.pipeline import (
     mark_published,
     prune_report_versions,
     reports_dir,
+    run_dir,
     transform,
     warehouse_run_id,
     write_quality_report,
@@ -74,7 +75,7 @@ def _staging(cfg, name: str, run_id: str) -> Path:
     clear `extract` as well, i.e. re-reading the whole feed, which is precisely
     what staging exists to avoid.
     """
-    d = cfg["paths"]["staging"] / run_id
+    d = run_dir(cfg["paths"]["staging"], run_id)
     d.mkdir(parents=True, exist_ok=True)
     return d / f"{name}.parquet"
 
@@ -300,7 +301,7 @@ def task_clear_staging(**context):
     from them.
     """
     cfg = load_config()
-    d = cfg["paths"]["staging"] / context["run_id"]
+    d = run_dir(cfg["paths"]["staging"], context["run_id"])
     # rmtree, not glob("*.parquet") + rmdir: the run directory also holds a
     # reports/ subdirectory now, and rmdir on a non-empty directory raises.
     shutil.rmtree(d, ignore_errors=True)

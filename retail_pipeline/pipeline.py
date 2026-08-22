@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import time
@@ -589,7 +590,7 @@ def data_version_dir(cfg: dict, run_id: str) -> Path:
     A version is a directory, built whole and verified, and publishing it is
     one write to data/CURRENT. See publish_data_version().
     """
-    d = cfg["paths"]["data_runs"] / run_id
+    d = run_dir(cfg["paths"]["data_runs"], run_id)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -617,14 +618,15 @@ def new_data_version(cfg: dict, run_id: str) -> Path:
     """
     root = cfg["paths"]["data_runs"]
     root.mkdir(parents=True, exist_ok=True)
-    attempt, name = 1, run_id
+    attempt, suffix = 1, ""
     while True:
+        candidate = run_dir(root, run_id, suffix)
         try:
-            (root / name).mkdir(exist_ok=False)
-            return root / name
+            candidate.mkdir(exist_ok=False)
+            return candidate
         except FileExistsError:
             attempt += 1
-            name = f"{run_id}__{attempt}"
+            suffix = f"__{attempt}"
 
 
 MANIFEST_FILE = "CURRENT.json"
@@ -658,7 +660,7 @@ def published_manifest(cfg: dict) -> dict | None:
 
 
 def _reports_complete(cfg: dict, run_id: str) -> bool:
-    version = cfg["paths"]["reports"] / "runs" / run_id
+    version = run_dir(cfg["paths"]["reports"] / "runs", run_id)
     return all((version / name).is_file() for name in REPORT_NAMES)
 
 
@@ -722,7 +724,7 @@ def published_data_dir(cfg: dict) -> Path | None:
     manifest = published_manifest(cfg)
     if manifest is None:
         return None
-    d = cfg["paths"]["data_runs"].parent / manifest["data"]
+    d = contained(cfg["paths"]["data_runs"].parent, manifest["data"])
     return d if d.is_dir() else None
 
 
@@ -835,9 +837,67 @@ def reports_dir(cfg: dict, run_id: str) -> Path:
     then pointed at, and the only thing that changes about the published set is
     one line in one file. See publish_version().
     """
-    d = cfg["paths"]["reports"] / "runs" / run_id
+    d = run_dir(cfg["paths"]["reports"] / "runs", run_id)
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+# --- run_id is a directory name, and it is chosen by whoever triggers the DAG -
+#
+# context["run_id"] reaches this module verbatim from Airflow, and a caller
+# picks it: POST /api/v1/dags/.../dagRuns {"dag_run_id": ...}, or the UI's
+# "Trigger DAG w/ config" Run ID field. It then becomes a path component in
+# data/runs/, data/staging/, reports/runs/ and reports/failed_runs/ - paths
+# handed straight to mkdir(parents=True), os.replace() and shutil.rmtree().
+#
+# Airflow's own allowed_run_id_pattern (default ^[A-Za-z0-9_.~:+-]+$) is not a
+# defence here: it lists "." as a literal, so ".." is a legal run_id, and
+# data/staging/.. is data/. rmtree() on that, with ignore_errors=True, empties
+# the data layer on a fully green run and logs nothing.
+#
+# Two layers, because either one alone rots: the character class stops the
+# payload, and the containment check stops the next person who adds a path
+# built from run_id and forgets the character class.
+_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~:+=-]{0,199}$")
+
+
+def safe_run_id(run_id: str) -> str:
+    """The one gate. First character must be alphanumeric - that is what rules
+    out "." and "..", which the character class alone would let through."""
+    if not isinstance(run_id, str) or not _SAFE_RUN_ID.fullmatch(run_id):
+        raise ValueError(
+            f"run_id {run_id!r} is not a usable directory name. It must start "
+            "with a letter or digit and contain only letters, digits and "
+            "._~:+=- (at most 200 characters)."
+        )
+    return run_id
+
+
+def run_dir(root: Path, run_id: str, suffix: str = "") -> Path:
+    """<root>/<run_id>, verified to still be under <root>."""
+    child = Path(root) / (safe_run_id(run_id) + suffix)
+    child.resolve().relative_to(Path(root).resolve())  # raises if it escaped
+    return child
+
+
+def contained(root: Path, relative: str) -> Path:
+    """<root>/<relative>, verified to still be under <root>.
+
+    The same guard as run_dir for the pointers that name a path rather than a
+    bare run_id - the manifest records "runs/<version>", so safe_run_id
+    cannot be asked about it directly, but the containment check still can.
+    A pointer that resolves outside its own tree is a corrupt or edited
+    manifest, not an empty one, so this raises rather than reporting
+    "nothing is published" and letting a consumer carry on.
+    """
+    child = Path(root) / relative
+    try:
+        child.resolve().relative_to(Path(root).resolve())
+    except ValueError:
+        raise ValueError(
+            f"published pointer {relative!r} resolves outside {root}"
+        ) from None
+    return child
 
 
 def _version_root(cfg: dict) -> Path:
@@ -866,7 +926,7 @@ def published_reports(cfg: dict) -> Path | None:
     manifest = published_manifest(cfg)
     if manifest is None or manifest.get("reports") is None:
         return None
-    d = cfg["paths"]["reports"] / manifest["reports"]
+    d = contained(cfg["paths"]["reports"], manifest["reports"])
     return d if d.is_dir() else None
 
 
@@ -897,7 +957,7 @@ def staged_data_run_id(cfg: dict) -> str | None:
     name = data_current_run_id(cfg)
     if name is None:
         return None
-    return _stamped_run_id(cfg["paths"]["data_runs"] / name / WAREHOUSE_FILE)
+    return _stamped_run_id(run_dir(cfg["paths"]["data_runs"], name) / WAREHOUSE_FILE)
 
 
 def warehouse_run_id(cfg: dict) -> str | None:
@@ -936,7 +996,7 @@ def mark_published(cfg: dict, run_id: str) -> None:
     # warehouse already carries the run_id that authorises publishing, so this
     # file changes nothing about whether the run succeeded. Letting it raise
     # turned a full, committed run into a failed one over a diagnostic write.
-    version = _version_root(cfg) / run_id
+    version = run_dir(_version_root(cfg), run_id)
     if not version.is_dir():
         # Do not conjure the directory. An empty runs/<run_id>/ holding only
         # this marker is indistinguishable from a version whose reports were
@@ -1032,10 +1092,10 @@ def keep_failed_reports(cfg: dict, run_id: str) -> Path | None:
     become the published set, which is why it moves out of runs/ rather than
     staying somewhere CURRENT could later name.
     """
-    version = _version_root(cfg) / run_id
+    version = run_dir(_version_root(cfg), run_id)
     if not version.is_dir():
         return None
-    dest = cfg["paths"]["reports"] / "failed_runs" / run_id
+    dest = run_dir(cfg["paths"]["reports"] / "failed_runs", run_id)
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1059,8 +1119,8 @@ def _restore_archived_reports(cfg: dict, run_id: str) -> None:
     Only ever called once the data for this run IS published, so restoring
     cannot resurrect a version that should have stayed archived.
     """
-    version = _version_root(cfg) / run_id
-    archived = cfg["paths"]["reports"] / "failed_runs" / run_id
+    version = run_dir(_version_root(cfg), run_id)
+    archived = run_dir(cfg["paths"]["reports"] / "failed_runs", run_id)
     if not archived.is_dir():
         return
     if all((version / n).is_file() for n in REPORT_NAMES):
@@ -1130,7 +1190,7 @@ def finalize_reports(cfg: dict, run_id: str) -> str:
     there is nothing to publish, and if the version has already been archived
     there is nothing to move.
     """
-    version = _version_root(cfg) / run_id
+    version = run_dir(_version_root(cfg), run_id)
     if current_run_id(cfg) == run_id:
         return "noop"  # already published - this is a retry
 
@@ -1596,12 +1656,12 @@ def run(config_path: str | None = None) -> dict:
         # keep_failed_reports, so both entry points take the same decision in
         # the same place.
         finalize_reports(cfg, run_id)
-        shutil.rmtree(cfg["paths"]["staging"] / run_id, ignore_errors=True)
+        shutil.rmtree(run_dir(cfg["paths"]["staging"], run_id), ignore_errors=True)
         raise
 
     finalize_reports(cfg, run_id)
     prune_report_versions(cfg)
-    shutil.rmtree(cfg["paths"]["staging"] / run_id, ignore_errors=True)
+    shutil.rmtree(run_dir(cfg["paths"]["staging"], run_id), ignore_errors=True)
     # Both ids, every run. The two layers are versioned separately and there is
     # no cross-layer transaction, so the one thing an operator needs is to be
     # able to see at a glance whether they agree.
