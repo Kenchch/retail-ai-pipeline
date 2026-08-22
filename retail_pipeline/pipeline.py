@@ -1086,6 +1086,151 @@ def prune_report_versions(cfg: dict, keep: int = 5) -> list[str]:
     return removed
 
 
+def _write_parquet(tables: dict[str, pd.DataFrame], out: Path) -> None:
+    # 1. Straight into this run's version directory. Nothing written here
+    #    is visible to a consumer, because consumers resolve data/CURRENT
+    #    and CURRENT still names the previous version. There is no rename
+    #    loop over the published directory any more - that loop was N
+    #    chances to half-succeed, and injecting an OSError into the second
+    #    rename produced exactly that: tonight's facts beside last night's
+    #    dimensions, published, with the run reported as a success.
+    for name, df in tables.items():
+        df.to_parquet(out / f"{name}.parquet", index=False, compression="snappy")
+
+
+def _seed_warehouse(cfg: dict, out: Path) -> Path:
+    # timeout: the DAG runs measure_adoption as a branch parallel to the
+    # merchandising chain, so two tasks can call load() against this file
+    # at once. Writing the star schema holds the write lock for ~4 s, and
+    # the sqlite3 default timeout is 5 s - a margin thin enough that a
+    # slower disk or a larger extract turns into "database is locked". WAL
+    # lets the readers through and the explicit timeout gives the writers
+    # room to queue.
+    db = out / WAREHOUSE_FILE
+    # Seeded from the currently published database so retirement still sees
+    # what the previous run published. A fresh file every run would make
+    # every table look new and nothing look retired.
+    previous_db = warehouse_path(cfg)
+    if previous_db is not None and previous_db.is_file() and not db.exists():
+        shutil.copyfile(previous_db, db)
+    elif not db.exists() and cfg["paths"]["warehouse"].is_file():
+        # First run after the move to versioned data: carry the old
+        # fixed-path database in, so its _published manifest still drives
+        # retirement.
+        shutil.copyfile(cfg["paths"]["warehouse"], db)
+    return db
+
+
+def _stage_tables(conn, tables: dict[str, pd.DataFrame]) -> None:
+    # 2. Load into __new tables, under sqlite3's default transaction
+    #    handling. Do NOT switch to isolation_level=None before this:
+    #    that autocommits every INSERT individually and took a full run
+    #    from 12 s to 80 s (measured).
+    for name, df in tables.items():
+        df.to_sql(f"{name}__new", conn, if_exists="replace", index=False)
+
+
+def _swap_tables(conn, tables: dict[str, pd.DataFrame]) -> None:
+    for name in tables:
+        conn.execute(f'DROP TABLE IF EXISTS "{name}"')
+        conn.execute(f'ALTER TABLE "{name}__new" RENAME TO "{name}"')
+
+
+def _rebuild_indexes(conn) -> None:
+    # 4. Indexes go INSIDE the transaction, with the swap they
+    #    belong to. Built after the COMMIT, a failure here left the
+    #    warehouse holding tonight's tables while the `except`
+    #    below deleted the staged Parquet, so SQLite was the new run
+    #    and Parquet was entirely the old one - and load() raised,
+    #    so the caller believed nothing had been published.
+    #    Reproduced by pointing an index at a column that does not
+    #    exist: sqlite=7 rows, parquet=522,566.
+    #
+    #    Indexes are dropped along with the table they were on, so
+    #    they are rebuilt on every swap rather than only first load.
+    for stmt in _INDEXES:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as exc:
+            # Only "the table isn't here yet" is expected - the
+            # adoption branch legitimately runs before fact_sales
+            # exists. A lock or disk error is not, and swallowing it
+            # would hide a failed write behind a successful run.
+            if "no such table" not in str(exc):
+                raise
+
+
+def _retire_unpublished(conn, tables: dict[str, pd.DataFrame]) -> list[str]:
+    # 5. Retire what this pipeline published before and is not
+    #    publishing now. Without it the warehouse accumulated tables
+    #    no code writes any more - dq_results and
+    #    adoption_top_products sat there for weeks, still returning
+    #    rows to anyone who queried them, frozen at whatever the
+    #    last version that wrote them produced. A stale table that
+    #    answers is worse than a missing one that errors.
+    #
+    #    Scoped to a recorded manifest rather than "everything not
+    #    in `tables`", so a table someone else put in this database
+    #    is never dropped by us.
+    had_manifest = conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_published'"
+    ).fetchone()[0]
+    conn.execute("CREATE TABLE IF NOT EXISTS _published (name TEXT PRIMARY KEY)")
+    previous = {r[0] for r in conn.execute("SELECT name FROM _published")}
+    if not had_manifest:
+        # First run against a warehouse that predates the manifest.
+        # Seed it with the legacy names so they go out through the
+        # normal retirement path below rather than a separate one.
+        previous |= set(LEGACY_RETIRED_TABLES)
+    present = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    # Two sets, because the two layers can disagree about what is
+    # still there. `retired` is what this pipeline once published
+    # and no longer does - the authority for BOTH layers. The
+    # SQLite DROP is separately restricted to what SQLite actually
+    # has, since a table can be absent there (a rebuilt or deleted
+    # warehouse.db) while its Parquet file is still sitting in the
+    # analytics directory. Intersecting before deciding what to
+    # retire made SQLite's state decide the Parquet layer's, so
+    # dq_results.parquet survived every upgrade of a warehouse
+    # whose database had been rebuilt - and a Power BI folder
+    # source reads that directory, not the database.
+    retired = sorted(previous - set(tables))
+    for gone in retired:
+        if gone in present:
+            conn.execute(f'DROP TABLE IF EXISTS "{gone}"')
+        log.info("Retired %s - no longer published", gone)
+    conn.execute("DELETE FROM _published")
+    conn.executemany(
+        "INSERT INTO _published(name) VALUES (?)",
+        [(n,) for n in sorted(tables)],
+    )
+    return retired
+
+
+def _stamp_publication(conn, run_id: str) -> None:
+    # Which run this data is, recorded INSIDE the swap transaction.
+    #
+    # The report finaliser has to answer "did this run's data reach
+    # the warehouse", and it used to answer it from a file written
+    # just after the commit - so a crash in between left the
+    # warehouse ahead of reports/CURRENT with nothing recording it.
+    # Stamped here, the answer commits atomically with the data it
+    # describes, and a warehouse/report mismatch becomes something
+    # you can detect rather than something you discover.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS _publication "
+        "(id INTEGER PRIMARY KEY CHECK (id = 1), "
+        "run_id TEXT, published_at TEXT)"
+    )
+    conn.execute("DELETE FROM _publication")
+    conn.execute(
+        "INSERT INTO _publication(id, run_id, published_at) VALUES (1, ?, ?)",
+        (run_id, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+    )
+
+
 def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) -> None:
     """Publish to Parquet and SQLite, staging both so a mid-load failure cannot
     leave the two layers describing different runs.
@@ -1116,45 +1261,13 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) 
 
     retired: list[str] = []
     try:
-        # 1. Straight into this run's version directory. Nothing written here
-        #    is visible to a consumer, because consumers resolve data/CURRENT
-        #    and CURRENT still names the previous version. There is no rename
-        #    loop over the published directory any more - that loop was N
-        #    chances to half-succeed, and injecting an OSError into the second
-        #    rename produced exactly that: tonight's facts beside last night's
-        #    dimensions, published, with the run reported as a success.
-        for name, df in tables.items():
-            df.to_parquet(out / f"{name}.parquet", index=False, compression="snappy")
-
-        # timeout: the DAG runs measure_adoption as a branch parallel to the
-        # merchandising chain, so two tasks can call load() against this file
-        # at once. Writing the star schema holds the write lock for ~4 s, and
-        # the sqlite3 default timeout is 5 s - a margin thin enough that a
-        # slower disk or a larger extract turns into "database is locked". WAL
-        # lets the readers through and the explicit timeout gives the writers
-        # room to queue.
-        db = out / WAREHOUSE_FILE
-        # Seeded from the currently published database so retirement still sees
-        # what the previous run published. A fresh file every run would make
-        # every table look new and nothing look retired.
-        previous_db = warehouse_path(cfg)
-        if previous_db is not None and previous_db.is_file() and not db.exists():
-            shutil.copyfile(previous_db, db)
-        elif not db.exists() and cfg["paths"]["warehouse"].is_file():
-            # First run after the move to versioned data: carry the old
-            # fixed-path database in, so its _published manifest still drives
-            # retirement.
-            shutil.copyfile(cfg["paths"]["warehouse"], db)
+        _write_parquet(tables, out)
+        db = _seed_warehouse(cfg, out)
 
         with closing(sqlite3.connect(db, timeout=60.0)) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
 
-            # 2. Load into __new tables, under sqlite3's default transaction
-            #    handling. Do NOT switch to isolation_level=None before this:
-            #    that autocommits every INSERT individually and took a full run
-            #    from 12 s to 80 s (measured).
-            for name, df in tables.items():
-                df.to_sql(f"{name}__new", conn, if_exists="replace", index=False)
+            _stage_tables(conn, tables)
 
             # 3. Swap. isolation_level=None only now, because sqlite3 does not
             #    open a transaction for DDL, so without manual control the
@@ -1164,102 +1277,10 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) 
             conn.isolation_level = None
             conn.execute("BEGIN IMMEDIATE")
             try:
-                for name in tables:
-                    conn.execute(f'DROP TABLE IF EXISTS "{name}"')
-                    conn.execute(f'ALTER TABLE "{name}__new" RENAME TO "{name}"')
-
-                # 4. Indexes go INSIDE the transaction, with the swap they
-                #    belong to. Built after the COMMIT, a failure here left the
-                #    warehouse holding tonight's tables while the `except`
-                #    below deleted the staged Parquet, so SQLite was the new run
-                #    and Parquet was entirely the old one - and load() raised,
-                #    so the caller believed nothing had been published.
-                #    Reproduced by pointing an index at a column that does not
-                #    exist: sqlite=7 rows, parquet=522,566.
-                #
-                #    Indexes are dropped along with the table they were on, so
-                #    they are rebuilt on every swap rather than only first load.
-                for stmt in _INDEXES:
-                    try:
-                        conn.execute(stmt)
-                    except sqlite3.OperationalError as exc:
-                        # Only "the table isn't here yet" is expected - the
-                        # adoption branch legitimately runs before fact_sales
-                        # exists. A lock or disk error is not, and swallowing it
-                        # would hide a failed write behind a successful run.
-                        if "no such table" not in str(exc):
-                            raise
-                # 5. Retire what this pipeline published before and is not
-                #    publishing now. Without it the warehouse accumulated tables
-                #    no code writes any more - dq_results and
-                #    adoption_top_products sat there for weeks, still returning
-                #    rows to anyone who queried them, frozen at whatever the
-                #    last version that wrote them produced. A stale table that
-                #    answers is worse than a missing one that errors.
-                #
-                #    Scoped to a recorded manifest rather than "everything not
-                #    in `tables`", so a table someone else put in this database
-                #    is never dropped by us.
-                had_manifest = conn.execute(
-                    "SELECT count(*) FROM sqlite_master "
-                    "WHERE type='table' AND name='_published'"
-                ).fetchone()[0]
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS _published (name TEXT PRIMARY KEY)"
-                )
-                previous = {r[0] for r in conn.execute("SELECT name FROM _published")}
-                if not had_manifest:
-                    # First run against a warehouse that predates the manifest.
-                    # Seed it with the legacy names so they go out through the
-                    # normal retirement path below rather than a separate one.
-                    previous |= set(LEGACY_RETIRED_TABLES)
-                present = {
-                    r[0]
-                    for r in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    )
-                }
-                # Two sets, because the two layers can disagree about what is
-                # still there. `retired` is what this pipeline once published
-                # and no longer does - the authority for BOTH layers. The
-                # SQLite DROP is separately restricted to what SQLite actually
-                # has, since a table can be absent there (a rebuilt or deleted
-                # warehouse.db) while its Parquet file is still sitting in the
-                # analytics directory. Intersecting before deciding what to
-                # retire made SQLite's state decide the Parquet layer's, so
-                # dq_results.parquet survived every upgrade of a warehouse
-                # whose database had been rebuilt - and a Power BI folder
-                # source reads that directory, not the database.
-                retired = sorted(previous - set(tables))
-                for gone in retired:
-                    if gone in present:
-                        conn.execute(f'DROP TABLE IF EXISTS "{gone}"')
-                    log.info("Retired %s - no longer published", gone)
-                conn.execute("DELETE FROM _published")
-                conn.executemany(
-                    "INSERT INTO _published(name) VALUES (?)",
-                    [(n,) for n in sorted(tables)],
-                )
-                # Which run this data is, recorded INSIDE the swap transaction.
-                #
-                # The report finaliser has to answer "did this run's data reach
-                # the warehouse", and it used to answer it from a file written
-                # just after the commit - so a crash in between left the
-                # warehouse ahead of reports/CURRENT with nothing recording it.
-                # Stamped here, the answer commits atomically with the data it
-                # describes, and a warehouse/report mismatch becomes something
-                # you can detect rather than something you discover.
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS _publication "
-                    "(id INTEGER PRIMARY KEY CHECK (id = 1), "
-                    "run_id TEXT, published_at TEXT)"
-                )
-                conn.execute("DELETE FROM _publication")
-                conn.execute(
-                    "INSERT INTO _publication(id, run_id, published_at) "
-                    "VALUES (1, ?, ?)",
-                    (run_id, datetime.now(timezone.utc).isoformat(timespec="seconds")),
-                )
+                _swap_tables(conn, tables)
+                _rebuild_indexes(conn)
+                retired = _retire_unpublished(conn, tables)
+                _stamp_publication(conn, run_id)
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
