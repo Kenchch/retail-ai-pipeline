@@ -131,18 +131,23 @@ never becomes current. (The three files at the top of `reports/` are a copy of
 the current version, committed so a reader does not have to clone and run the
 pipeline; each one names its `run_id`.)
 
-**What is *not* covered, stated exactly.** The data and the reports are two
-versioned trees with two pointers — `data/CURRENT` and `reports/CURRENT` — and
-no transaction spans them. `finalize_reports` moves the report pointer only
-when `data/CURRENT` already names the same run, so the reports cannot get
-ahead; but a crash between the two leaves the data published and the reports
-one run behind. Collapsing them into a single pointer over a single tree is the
-remaining step, and it would mean the reports and the warehouse sharing a
-retention policy, which they should not — three markdown files are worth
-keeping for months, half a gigabyte of Parquet is not.
+**One pointer, both trees.** `published/CURRENT.json` names the data version,
+the report version and the run they both belong to, and it is replaced with a
+single `os.replace`. Every consumer resolves it — `published_data_dir`,
+`published_reports`, `warehouse_path`, and `bi/build_star_schema.py` through
+them — so nothing can observe tonight's warehouse beside last night's reports.
 
-The mismatch is made **detectable** rather than impossible. Every run logs
-both:
+There used to be two pointers, `data/CURRENT` and `reports/CURRENT`, flipped
+one after the other, and between them that mixture was exactly what a consumer
+saw. No transaction spans two files, so the fix was not to order the writes
+better but to stop having two. Both files are still written, as compatibility
+caches and as the internal signal that each tree passed verification; nothing
+authoritative reads them, and corrupting either does not move what a consumer
+sees. The two trees keep their own directories and their own retention — three
+markdown files are worth keeping for months, half a gigabyte of Parquet is not
+— because the manifest names paths rather than merging them.
+
+Every run still logs both ids, so a mismatch stays visible in the log:
 
 ```
 Done in 12.2s | warehouse run local_20260819T094207619994 | reports run local_20260819T094207619994
