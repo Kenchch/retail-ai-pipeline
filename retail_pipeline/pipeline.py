@@ -957,14 +957,39 @@ def _restore_archived_reports(cfg: dict, run_id: str) -> None:
         return
     if all((version / n).is_file() for n in REPORT_NAMES):
         return  # the live version is complete; leave the archive alone
+    restored = []
     for name in (*REPORT_NAMES, PUBLISHED_MARKER):
         src = archived / name
-        if src.is_file():
-            version.mkdir(parents=True, exist_ok=True)
-            os.replace(src, version / name)
+        if not src.is_file():
+            continue
+        if (version / name).is_file():
+            # Fill GAPS only, never overwrite. The archived copy is by
+            # construction older than the live one - it was moved out of runs/
+            # by an earlier finalise - so a file the re-run has already rebuilt
+            # is this run's, and the archived one belongs to the attempt that
+            # failed. Overwriting it published the failed attempt's
+            # "GATE FAILED - NOTHING WAS PUBLISHED" report as the current one,
+            # describing the rejected extract, beside a run_metrics.json
+            # describing the data that DID publish.
+            #
+            # Recovery from a failed gate rebuilds the version only PARTIALLY -
+            # measure_adoption is a root task and is not downstream of the
+            # gate, so clearing the gate does not re-run it - which is exactly
+            # when this fires.
+            continue
+        version.mkdir(parents=True, exist_ok=True)
+        os.replace(src, version / name)
+        restored.append(name)
     if not any(archived.iterdir()):
+        # May not fire now: the archive keeps whatever the re-run rebuilt for
+        # itself. That is right - those are the failed attempt's diagnostics
+        # and belong in failed_runs/.
         archived.rmdir()
-    log.info("Restored %s from failed_runs - its data has since published", run_id)
+    log.info(
+        "Restored %s from failed_runs (%s) - its data has since published",
+        run_id,
+        ", ".join(restored) or "nothing was missing",
+    )
 
 
 def finalize_reports(cfg: dict, run_id: str) -> str:
