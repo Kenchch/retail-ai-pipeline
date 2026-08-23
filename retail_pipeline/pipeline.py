@@ -1070,16 +1070,24 @@ def publish_version(cfg: dict, run_id: str) -> Path:
     os.replace(tmp, _current_file(cfg))
     _snapshot_for_readers(cfg, version)
     # The manifest is the authority, so making a report version current means
-    # updating it. The data pointer is carried across untouched: load() has
-    # already bound this run's data, and rewriting it here would let a report
-    # publish silently move the warehouse.
+    # updating it. Bind the data version finalize has ALREADY verified is
+    # current - data_current_run_id - not the existing manifest's pointer.
+    #
+    # finalize only reaches here when staged_data_run_id(cfg) == run_id, i.e.
+    # data/CURRENT names a complete, stamped, verified version for this run, so
+    # that is the right data to bind, and in the normal case it equals the
+    # manifest's pointer - the warehouse does not move. They DIVERGE only when
+    # load() was killed between publish_data_version (which had already flipped
+    # data/CURRENT to this run) and load()'s own publish_run (which had not yet
+    # written the manifest): the manifest still named the previous run, and
+    # reading it here bound the previous warehouse under this run's fresh
+    # reports. data_current_run_id is the directory name, so a retry's
+    # <run_id>__2 is handled the same way load()'s own publish_run handles it.
     existing = published_manifest(cfg) or {}
-    publish_run(
-        cfg,
-        run_id,
-        (existing.get("data") or f"runs/{run_id}").removeprefix("runs/"),
-        run_id,
-    )
+    data_dir = data_current_run_id(cfg) or (
+        existing.get("data") or f"runs/{run_id}"
+    ).removeprefix("runs/")
+    publish_run(cfg, run_id, data_dir, run_id)
     log.info("Published report version %s", run_id)
     return version
 
