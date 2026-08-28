@@ -97,7 +97,9 @@ def test_the_metrics_are_written_before_the_publish():
 def test_dbt_reads_only_after_the_atomic_publish():
     """The dbt consumer resolves published/CURRENT.json, which load() moves
     only after the complete data and report versions have been verified."""
-    assert dag.get_task("dbt_build").upstream_task_ids == {"publish"}
+    dbt = dag.get_task("dbt_build")
+    assert dbt.upstream_task_ids == {"publish"}
+    assert dbt.op_kwargs == {"expected_run_id": "{{ run_id }}"}
     assert "dbt_build" in dag.get_task("publish").downstream_task_ids
 
 

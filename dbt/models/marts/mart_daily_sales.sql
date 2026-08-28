@@ -10,6 +10,7 @@ with daily as (
 )
 
 select
+    cast('{{ env_var("RETAIL_PUBLISHED_RUN_ID_SQL") }}' as varchar) as run_id,
     cast(d.date_key as date) as date_key,
     cast(d.year as integer) as year,
     cast(d.month as integer) as month,

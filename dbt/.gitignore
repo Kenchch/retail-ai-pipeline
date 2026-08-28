@@ -3,4 +3,5 @@ logs/
 dbt_packages/
 *.duckdb
 *.duckdb.wal
+CURRENT.json
 .user.yml

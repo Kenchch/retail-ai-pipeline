@@ -9,15 +9,19 @@ requirements brief, a user guide, an AI-literacy workshop and adoption
 measurement wired into the pipeline itself.
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python scripts/get_data.py           # ~45 MB of transactions + usage telemetry
 python -m retail_pipeline.pipeline   # ~12 s end to end
 pytest -q
 
-# Optional downstream analytics consumer
-pip install -r requirements-dbt.txt
+# dbt consumer (also required on every Airflow worker)
+python -m pip install -r requirements-dbt.txt
 python scripts/run_dbt.py
 ```
+
+Airflow workers additionally use the pinned runtime and security overrides in
+`requirements-airflow.txt`; CI installs that file after Airflow's versioned
+release constraints, then validates the combined environment.
 
 ## Results from a full run
 
@@ -70,6 +74,14 @@ directories from that one manifest to dbt-duckdb. DuckDB queries the Parquet
 and JSON files in place; the existing pandas transformations and atomic publish
 path are unchanged.
 
+dbt builds into a unique candidate DuckDB file. Only a completely successful
+`dbt build` — model, contract and every test — is exposed by atomically replacing
+`dbt/CURRENT.json`; it names an immutable file under `dbt/runs/`. A failed build
+leaves the previous validated mart untouched, an old WAL cannot contaminate the
+new file, and Windows BI readers can finish against their old version. Every mart row also carries the published `run_id`,
+and a cleared historical Airflow task refuses to validate a newer run that
+happens to be current.
+
 The project builds one contracted model, `mart_daily_sales`: one row per
 calendar day with revenue, distinct orders and guest-revenue share. It starts
 from the continuous `dim_date`, so closed days are represented by zeroes rather
@@ -79,10 +91,10 @@ a semantic `DATE`, and its enforced contract checks every output name and type.
 `dbt build` also checks source keys, fact-to-dimension relationships, the input
 fingerprint record, and row conservation. The conservation assertion compares
 the two published Parquet counts with
-`run_metrics.inputs['online_retail.csv'].rows` from the report version bound in
-the same manifest. It proves that the published files agree with that run's
-recorded input count; the fixed 541,909-row reference result above remains a
-documented benchmark rather than a hard-coded test that would reject a valid
+the configured raw input's `run_metrics.inputs[...].rows` from the report
+version bound in the same manifest. It proves that the published files agree
+with that run's recorded input count; the fixed 541,909-row reference result
+above remains a documented benchmark rather than a hard-coded test that would reject a valid
 replacement dataset.
 
 ## How it works
@@ -109,6 +121,11 @@ the edges, because every bug it has carried has been a wiring bug rather than a
 logic one, and none of those show up in a unit test of a stage function.
 Airflow is not in `requirements.txt` (nothing but `dags/` imports it), so those
 tests skip locally and CI installs it in a job of its own.
+Because `dbt_build` is an unconditional DAG task, every Airflow worker must
+install `requirements.txt`, `requirements-dbt.txt` and
+`requirements-airflow.txt`; CI verifies that combined environment against
+Airflow 3.3.1, audits the installed worker dependencies, and then proves that
+the DAG parses.
 
 **Scope: a single-machine Airflow, `LocalExecutor` or `SequentialExecutor`.**
 Staging, the warehouse and the reports are all local `pathlib` paths written
@@ -122,13 +139,15 @@ object storage (fsspec) and the warehouse onto a shared database — the stage
 functions would not change, but every path in `config.yaml` would. Adding that
 here would be cloud infrastructure in service of a demo.
 
-**The guarantee, stated precisely.** A run is a *version*. Every Parquet
-file and the SQLite database are written into `data/runs/<run_id>/`, nothing
-in there is visible to anyone, and publishing it is a single `os.replace` of
-`data/CURRENT` — one atomic filesystem operation. Consumers resolve the pointer
-and read the version it names, so they see the previous run in full or this one
-in full, never a mixture. A run that fails has its whole version directory
-deleted; there is nothing to roll back because nothing was ever visible.
+**The guarantee, stated precisely.** A run is a *version*. Every Parquet file
+and the SQLite database are written into `data/runs/<run_id>/`. Before the
+`publish` stage succeeds, nothing in there is visible to consumers; publishing
+replaces one pointer atomically, so readers see the previous version in full or
+this one in full, never a mixture. A failure before that point deletes the new
+version and needs no rollback. dbt is deliberately downstream: if its contract
+or data tests fail, the warehouse has already refreshed and the DAG goes red,
+but the candidate mart is not promoted and the previous validated DuckDB stays
+available.
 
 SQLite is still swapped in one transaction inside that version — tables built
 as `<name>__new`, then dropped, renamed and indexed inside a single

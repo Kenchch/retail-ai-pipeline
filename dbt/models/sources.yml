@@ -7,7 +7,7 @@ sources:
       published/CURRENT.json.
     meta:
       external_location: >-
-        {{ env_var('RETAIL_PUBLISHED_DATA_DIR') }}/{name}.parquet
+        {{ env_var('RETAIL_PUBLISHED_DATA_DIR_SQL') }}/{name}.parquet
     tables:
       - name: fact_sales
         description: One accepted invoice line, with measures and dimension keys.
@@ -142,7 +142,7 @@ sources:
         description: Run-level counts, adoption metrics and input fingerprints.
         config:
           external_location: >-
-            read_json_auto('{{ env_var("RETAIL_PUBLISHED_REPORTS_DIR") }}/run_metrics.json')
+            read_json_auto('{{ env_var("RETAIL_PUBLISHED_REPORTS_DIR_SQL") }}/run_metrics.json')
         columns:
           - name: run_id
             description: Logical pipeline run identifier.

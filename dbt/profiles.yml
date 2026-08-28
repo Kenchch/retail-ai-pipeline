@@ -3,6 +3,6 @@ retail_ai:
   outputs:
     dev:
       type: duckdb
-      path: "dbt/retail.duckdb"
+      path: "{{ env_var('RETAIL_DBT_PATH') }}"
       schema: analytics
       threads: 4

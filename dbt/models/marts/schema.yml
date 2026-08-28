@@ -9,6 +9,10 @@ models:
       contract:
         enforced: true
     columns:
+      - name: run_id
+        description: Published pipeline run from which this mart was built.
+        data_type: varchar
+        data_tests: [not_null]
       - name: date_key
         description: Calendar date at daily grain.
         data_type: date

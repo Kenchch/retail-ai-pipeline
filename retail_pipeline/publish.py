@@ -15,6 +15,8 @@ import os
 import re
 import shutil
 import sqlite3
+import tempfile
+import time
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +31,7 @@ __all__ = [
     "REPORT_NAMES",
     "WAREHOUSE_FILE",
     "_SAFE_RUN_ID",
+    "_atomic_write_text",
     "_copy_database",
     "_current_file",
     "_data_current_file",
@@ -79,6 +82,42 @@ PUBLISHED_MARKER = ".published"
 
 
 WAREHOUSE_FILE = "retail.db"
+
+
+def _atomic_write_text(target: Path, value: str) -> None:
+    """Replace one pointer without sharing a temp name with another writer.
+
+    A fixed ``CURRENT.tmp`` lets concurrent publishers overwrite each other's
+    sidecar: one caller can then successfully replace CURRENT with the other
+    caller's value while that other caller fails because the temp disappeared.
+    A unique file in the same directory preserves atomic ``os.replace`` while
+    making each write independent. fsync closes the smaller crash window where
+    the rename is durable but the new contents are not.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(value)
+            fh.flush()
+            os.fsync(fh.fileno())
+        for attempt in range(20):
+            try:
+                os.replace(tmp, target)
+                break
+            except PermissionError:
+                # Windows can transiently reject two simultaneous replaces of
+                # the same destination even though neither source is shared.
+                # The unique sidecar remains intact, so a short bounded retry
+                # is safe and preserves the same atomic final operation.
+                if attempt == 19:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def data_version_dir(cfg: dict, run_id: str) -> Path:
@@ -194,10 +233,7 @@ def publish_run(
         "published_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     target = _manifest_file(cfg)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    os.replace(tmp, target)
+    _atomic_write_text(target, json.dumps(manifest, indent=2))
     log.info(
         "Published run %s (data %s, reports %s)", run_id, data_version, reports_version
     )
@@ -295,10 +331,7 @@ def publish_data_version(cfg: dict, version_name: str) -> Path:
     attempt - see new_data_version().
     """
     version = cfg["paths"]["data_runs"] / version_name
-    tmp = _data_current_file(cfg).with_suffix(".tmp")
-    tmp.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(version_name + "\n", encoding="utf-8")
-    os.replace(tmp, _data_current_file(cfg))
+    _atomic_write_text(_data_current_file(cfg), version_name + "\n")
     log.info("Published data version %s", version_name)
     return version
 
@@ -572,10 +605,7 @@ def publish_version(cfg: dict, run_id: str) -> Path:
             "{} is missing {} - refusing to publish an incomplete report "
             "version.".format(version, ", ".join(missing))
         )
-    tmp = _current_file(cfg).with_suffix(".tmp")
-    tmp.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(run_id + "\n", encoding="utf-8")
-    os.replace(tmp, _current_file(cfg))
+    _atomic_write_text(_current_file(cfg), run_id + "\n")
     _snapshot_for_readers(cfg, version)
     # The manifest is the authority, so making a report version current means
     # updating it. Bind the data version finalize has ALREADY verified is

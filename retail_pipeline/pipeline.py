@@ -773,6 +773,13 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) 
     #    everything after it is published, in full.
     verify_data_version(cfg, out.name, tables, run_id=run_id)
     publish_data_version(cfg, out.name)
+    # A failed publish can have had its complete reports moved to failed_runs/
+    # by the all_done finaliser. Clearing only the publish task does not clear
+    # that already-successful finaliser, so restore the archived version here,
+    # after the data pointer proves this retry really published, and before the
+    # authoritative manifest binds the two trees. Otherwise the retry publishes
+    # new data with reports:null and no later task repairs it.
+    _restore_archived_reports(cfg, run_id)
     # ONE write makes both trees visible. The report version is bound here when
     # it is already complete, which in run() and the DAG it always is - both
     # build it before the data is published, precisely so this can be atomic.

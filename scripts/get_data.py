@@ -35,6 +35,11 @@ import pandas as pd
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from retail_pipeline.pipeline import load_config
+from retail_pipeline.publish import published_data_dir
+
 URL = (
     "https://raw.githubusercontent.com/databricks/Spark-The-Definitive-Guide/"
     "master/data/retail-data/all/online-retail-dataset.csv"
@@ -162,8 +167,12 @@ def generate_events() -> None:
     rng = random.Random(SEED)
 
     codes = [f"SKU{i:05d}" for i in range(400)]
-    products = ROOT / "data" / "processed" / "dim_product.parquet"
-    if products.exists():  # real stock codes, so usage joins back to the catalogue
+    published = published_data_dir(load_config())
+    products = None if published is None else published / "dim_product.parquet"
+    if products is not None and products.exists():
+        # Use only the version selected by the authoritative publish manifest.
+        # The old data/processed path predates versioned publication and can be
+        # stale even when the current warehouse is healthy.
         top = pd.read_parquet(products, columns=["stock_code", "n_invoices"])
         codes = top.nlargest(400, "n_invoices")["stock_code"].tolist()
 

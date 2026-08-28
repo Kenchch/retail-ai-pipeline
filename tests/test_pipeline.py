@@ -11,6 +11,8 @@ import json
 import os
 import pathlib
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import pytest
@@ -1516,10 +1518,11 @@ def test_reports_archived_by_a_failed_publish_come_back_when_it_succeeds(cfg, tm
 
     # The operator clears `publish`; this time it works.
     P.load({"fact_sales": frame}, cfg, run_id="run_b")
-    P.mark_published(cfg, "run_b")
 
-    assert finalize_reports(cfg, "run_b") == "published"
-    assert current_run_id(cfg) == "run_b"
+    # Airflow does not automatically re-run an all_done finaliser that already
+    # succeeded when an operator clears only publish. load() itself must restore
+    # the reports before it writes the authoritative manifest.
+    assert P.published_manifest(cfg)["reports"] == "runs/run_b"
     for name in REPORT_NAMES:
         assert (
             (published_reports(cfg) / name)
@@ -1527,6 +1530,29 @@ def test_reports_archived_by_a_failed_publish_come_back_when_it_succeeds(cfg, tm
             .startswith("new")
         )
     assert not (cfg["paths"]["reports"] / "failed_runs" / "run_b").exists()
+
+    # The compatibility cache is repaired if the operator also clears the
+    # finaliser, but correctness no longer depends on that second manual step.
+    assert finalize_reports(cfg, "run_b") == "published"
+    assert current_run_id(cfg) == "run_b"
+
+
+def test_atomic_pointer_writers_do_not_share_a_temp_file(tmp_path):
+    """Concurrent pointer writes may race on the final value, but no caller may
+    publish another caller's sidecar or fail because a shared temp vanished."""
+    target = tmp_path / "CURRENT.json"
+    values = [f'{{"run_id": "run_{i}"}}' for i in range(16)]
+    barrier = threading.Barrier(len(values))
+
+    def write(value):
+        barrier.wait()
+        P._atomic_write_text(target, value)
+
+    with ThreadPoolExecutor(max_workers=len(values)) as pool:
+        list(pool.map(write, values))
+
+    assert target.read_text(encoding="utf-8") in values
+    assert list(tmp_path.glob(".CURRENT.json.*.tmp")) == []
 
 
 def test_a_version_archived_for_good_is_not_resurrected(cfg, tmp_path):
