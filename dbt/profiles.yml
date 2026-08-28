@@ -1,0 +1,8 @@
+retail_ai:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "dbt/retail.duckdb"
+      schema: analytics
+      threads: 4

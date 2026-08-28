@@ -1,0 +1,15 @@
+name: retail_ai
+version: "1.0.0"
+config-version: 2
+
+profile: retail_ai
+
+model-paths: ["models"]
+test-paths: ["tests"]
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  retail_ai:
+    marts:
+      +materialized: table
+      +schema: marts

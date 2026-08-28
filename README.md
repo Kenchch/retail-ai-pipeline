@@ -13,6 +13,10 @@ pip install -r requirements.txt
 python scripts/get_data.py           # ~45 MB of transactions + usage telemetry
 python -m retail_pipeline.pipeline   # ~12 s end to end
 pytest -q
+
+# Optional downstream analytics consumer
+pip install -r requirements-dbt.txt
+python scripts/run_dbt.py
 ```
 
 ## Results from a full run
@@ -57,12 +61,36 @@ rejected = 541,909 — the source row count.
 Design and the decisions behind it: [`bi/MODEL.md`](bi/MODEL.md).
 Build it yourself in ~45 minutes: [`bi/BUILD_POWERBI.md`](bi/BUILD_POWERBI.md).
 
+## dbt analytics consumer
+
+[`dbt/`](dbt/) is a deliberately small downstream consumer of the published
+warehouse. `scripts/run_dbt.py` resolves `published/CURRENT.json` through the
+pipeline's own containment-checked helpers, then passes the data and report
+directories from that one manifest to dbt-duckdb. DuckDB queries the Parquet
+and JSON files in place; the existing pandas transformations and atomic publish
+path are unchanged.
+
+The project builds one contracted model, `mart_daily_sales`: one row per
+calendar day with revenue, distinct orders and guest-revenue share. It starts
+from the continuous `dim_date`, so closed days are represented by zeroes rather
+than disappearing. The mart casts the timestamp-backed warehouse `date_key` to
+a semantic `DATE`, and its enforced contract checks every output name and type.
+
+`dbt build` also checks source keys, fact-to-dimension relationships, the input
+fingerprint record, and row conservation. The conservation assertion compares
+the two published Parquet counts with
+`run_metrics.inputs['online_retail.csv'].rows` from the report version bound in
+the same manifest. It proves that the published files agree with that run's
+recorded input count; the fixed 541,909-row reference result above remains a
+documented benchmark rather than a hard-coded test that would reject a valid
+replacement dataset.
+
 ## How it works
 
 ```
 extract → data quality → star schema → recommend ─┐
-                                                  ├→ run metrics → publish → finalize
-                          adoption (telemetry) ───┘
+                                                  ├→ run metrics → publish ─┬→ dbt build
+                          adoption (telemetry) ───┘                         └→ finalize
 ```
 
 `recommend` and `adoption` are separate branches — adoption reads the usage
@@ -71,7 +99,7 @@ which builds the report version from the staged tables; `publish` is the only
 task that writes to the warehouse, and `finalize` points `reports/CURRENT` at
 the version or archives it.
 
-Three modules, scheduled as ten Airflow tasks
+Three modules, scheduled as twelve Airflow tasks
 ([`dags/`](dags/retail_pipeline_dag.py)) so a failure names the stage that broke.
 Every stage computes into per-run staging; a single `publish` task is the only
 thing that writes to the warehouse.
@@ -229,7 +257,7 @@ start flowing into the warehouse, which is why the tests exist.
 
 ## Stack
 
-Python · pandas · scikit-learn · Parquet · SQLite · Airflow (single machine,
+Python · pandas · scikit-learn · Parquet · SQLite · dbt-duckdb · Airflow (single machine,
 see above) · Git. SQLite stands in for a served warehouse such as Azure SQL:
 the star schema and the DAX over it would carry across unchanged, but the load
 path itself would not — `BEGIN IMMEDIATE`, `ALTER TABLE ... RENAME` and the
