@@ -9,7 +9,7 @@ expected as (
         rows_loaded::bigint as reported_loaded,
         rows_quarantined::bigint as reported_rejected,
         rows_source::bigint as reported_source,
-        inputs['online_retail.csv'].rows::bigint as input_rows
+        inputs['{{ env_var("RETAIL_RAW_INPUT_NAME_SQL") }}'].rows::bigint as input_rows
     from {{ source('reports', 'run_metrics') }}
 )
 

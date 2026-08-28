@@ -27,9 +27,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
-from airflow import DAG
 from airflow.exceptions import AirflowException
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.sdk import DAG
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -390,7 +390,11 @@ with DAG(
         python_callable=task_prune_staging,
         trigger_rule="all_done",
     )
-    t11 = PythonOperator(task_id="dbt_build", python_callable=run_dbt)
+    t11 = PythonOperator(
+        task_id="dbt_build",
+        python_callable=run_dbt,
+        op_kwargs={"expected_run_id": "{{ run_id }}"},
+    )
     watcher = PythonOperator(
         task_id="watcher",
         python_callable=task_watcher,
