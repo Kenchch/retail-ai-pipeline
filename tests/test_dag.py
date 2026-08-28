@@ -28,7 +28,7 @@ from dags.retail_pipeline_dag import dag, task_watcher
 def test_the_dag_loads_with_no_import_errors():
     """A DAG that does not import is a DAG the scheduler silently never runs."""
     assert dag.dag_id == "retail_ai_pipeline"
-    assert len(dag.tasks) == 11
+    assert len(dag.tasks) == 12
 
 
 def test_every_task_feeds_the_watcher():
@@ -92,6 +92,13 @@ def test_the_metrics_are_written_before_the_publish():
     the version is complete before anything can point at it. Reading published
     Parquet after the publish assembled it from a different batch."""
     assert "publish" in dag.get_task("write_run_metrics").downstream_task_ids
+
+
+def test_dbt_reads_only_after_the_atomic_publish():
+    """The dbt consumer resolves published/CURRENT.json, which load() moves
+    only after the complete data and report versions have been verified."""
+    assert dag.get_task("dbt_build").upstream_task_ids == {"publish"}
+    assert "dbt_build" in dag.get_task("publish").downstream_task_ids
 
 
 def test_the_finaliser_waits_for_every_writer_and_the_publish():

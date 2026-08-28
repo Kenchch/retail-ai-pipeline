@@ -86,3 +86,32 @@ jobs:
           echo "$out" | grep -q "skipped" \
             && { echo "the DAG tests skipped - Airflow did not import"; exit 1; }
           exit 0
+
+  dbt:
+    # One end-to-end run proves that dbt can resolve the atomically published
+    # data/report pair, build the contracted mart and execute every data test.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dbt.txt pip-audit
+
+      - name: Download the reference inputs
+        run: python scripts/get_data.py
+
+      - name: Publish one complete pipeline run
+        run: python -m retail_pipeline.pipeline
+
+      - name: Build and test the dbt consumer
+        run: python scripts/run_dbt.py
+
+      - name: Audit dbt dependencies
+        run: pip-audit -r requirements-dbt.txt --strict

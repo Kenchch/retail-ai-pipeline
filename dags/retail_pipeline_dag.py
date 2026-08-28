@@ -51,6 +51,7 @@ from retail_pipeline.pipeline import (
     write_run_metrics,
 )
 from retail_pipeline.recommend import recommend
+from scripts.run_dbt import main as run_dbt
 
 log = logging.getLogger("pipeline")
 
@@ -389,6 +390,7 @@ with DAG(
         python_callable=task_prune_staging,
         trigger_rule="all_done",
     )
+    t11 = PythonOperator(task_id="dbt_build", python_callable=run_dbt)
     watcher = PythonOperator(
         task_id="watcher",
         python_callable=task_watcher,
@@ -416,6 +418,7 @@ with DAG(
     # can point at it.
     t1 >> t2 >> t3 >> t4
     [t4, t5] >> t7 >> t6 >> t8 >> t9
+    t6 >> t11
 
     # The finaliser waits for every task that writes into the version
     # directory, and for the publish. all_done, so it runs whether they

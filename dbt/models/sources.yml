@@ -1,0 +1,161 @@
+version: 2
+
+sources:
+  - name: warehouse
+    description: >-
+      Immutable Parquet tables from the data version named by
+      published/CURRENT.json.
+    meta:
+      external_location: >-
+        {{ env_var('RETAIL_PUBLISHED_DATA_DIR') }}/{name}.parquet
+    tables:
+      - name: fact_sales
+        description: One accepted invoice line, with measures and dimension keys.
+        columns:
+          - name: invoice_no
+            description: Source invoice identifier.
+            data_tests: [not_null]
+          - name: stock_code
+            description: Product business key.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('warehouse', 'dim_product')
+                    field: stock_code
+          - name: customer_id
+            description: Customer business key; null represents guest checkout.
+            data_tests:
+              - relationships:
+                  arguments:
+                    to: source('warehouse', 'dim_customer')
+                    field: customer_id
+          - name: date_key
+            description: Calendar timestamp at midnight for the invoice date.
+            data_tests:
+              - not_null
+              - relationships:
+                  arguments:
+                    to: source('warehouse', 'dim_date')
+                    field: date_key
+          - name: invoice_ts
+            description: Original invoice timestamp.
+            data_tests: [not_null]
+          - name: quantity
+            description: Number of units sold on the invoice line.
+            data_tests: [not_null]
+          - name: unit_price
+            description: Unit price in GBP.
+            data_tests: [not_null]
+          - name: revenue
+            description: Quantity multiplied by unit price in GBP.
+            data_tests: [not_null]
+          - name: country
+            description: Invoice country supplied by the source.
+            data_tests: [not_null]
+
+      - name: dim_product
+        description: One row per sellable stock code.
+        columns:
+          - name: stock_code
+            description: Product business key.
+            data_tests: [unique, not_null]
+          - name: n_invoices
+            description: Distinct accepted invoices containing the product.
+          - name: units_sold
+            description: Accepted units sold for the product.
+          - name: revenue
+            description: Accepted revenue attributed to the product.
+          - name: avg_unit_price
+            description: Mean accepted unit price for the product.
+          - name: description
+            description: Most frequently observed product description.
+            data_tests: [not_null]
+
+      - name: dim_customer
+        description: One row per known customer; guests remain null in the fact.
+        columns:
+          - name: customer_id
+            description: Customer business key.
+            data_tests: [unique, not_null]
+          - name: country
+            description: Most frequently observed country for the customer.
+          - name: n_invoices
+            description: Distinct accepted invoices for the customer.
+          - name: total_revenue
+            description: Accepted revenue attributed to the customer.
+          - name: first_order
+            description: Timestamp of the customer's first accepted order.
+          - name: last_order
+            description: Timestamp of the customer's latest accepted order.
+
+      - name: dim_date
+        description: Continuous calendar from the first through last sales date.
+        columns:
+          - name: date_key
+            description: Calendar timestamp at midnight.
+            data_tests: [unique, not_null]
+          - name: has_sales
+            description: Whether at least one accepted line exists on the date.
+            data_tests: [not_null]
+          - name: year
+            description: Calendar year.
+            data_tests: [not_null]
+          - name: month
+            description: Calendar month number.
+            data_tests: [not_null]
+          - name: day_of_week
+            description: English weekday name.
+            data_tests: [not_null]
+          - name: is_weekend
+            description: Whether the date is Saturday or Sunday.
+            data_tests: [not_null]
+
+      - name: quarantine
+        description: Rejected source rows retained with every blocking reason.
+        columns:
+          - name: invoice_no
+            description: Source invoice identifier, possibly null when rejected.
+          - name: stock_code
+            description: Source stock code, possibly null when rejected.
+          - name: description
+            description: Source product description.
+          - name: quantity
+            description: Source quantity, including invalid values.
+          - name: invoice_ts
+            description: Source invoice timestamp, possibly null when rejected.
+          - name: unit_price
+            description: Source unit price, including invalid values.
+          - name: customer_id
+            description: Source customer identifier.
+          - name: country
+            description: Source invoice country.
+          - name: reasons
+            description: Comma-separated blocking quality rules failed by the row.
+            data_tests: [not_null]
+
+  - name: reports
+    description: >-
+      Reports from the report version atomically bound to the same published run.
+    tables:
+      - name: run_metrics
+        description: Run-level counts, adoption metrics and input fingerprints.
+        config:
+          external_location: >-
+            read_json_auto('{{ env_var("RETAIL_PUBLISHED_REPORTS_DIR") }}/run_metrics.json')
+        columns:
+          - name: run_id
+            description: Logical pipeline run identifier.
+            data_tests: [unique, not_null]
+          - name: rows_source
+            description: Number of source transaction rows read by the run.
+            data_tests: [not_null]
+          - name: rows_quarantined
+            description: Number of source rows rejected by blocking quality rules.
+            data_tests: [not_null]
+          - name: rows_loaded
+            description: Number of accepted rows published to fact_sales.
+            data_tests: [not_null]
+          - name: inputs
+            description: Per-input row counts and shortened SHA-256 fingerprints.
+            data_tests: [not_null]
