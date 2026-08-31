@@ -422,13 +422,16 @@ with DAG(
     # can point at it.
     t1 >> t2 >> t3 >> t4
     [t4, t5] >> t7 >> t6 >> t8 >> t9
-    t6 >> t11
-
     # The finaliser waits for every task that writes into the version
     # directory, and for the publish. all_done, so it runs whether they
     # succeeded or not, and only once they are all finished - which is the
     # guarantee `one_failed` could not give.
     [t2, t5, t7, t6] >> t10
+    # dbt resolves published/CURRENT.json, which finalize_reports may update.
+    # Keep publish as a direct upstream too: finalize_reports is all_done and
+    # can succeed after a failed publish, but dbt must never validate stale
+    # data in that case.
+    [t6, t10] >> t11
 
     # Every other task feeds the watcher. Built from dag.tasks rather than
     # listed by hand, because a list is something a future task can be left out

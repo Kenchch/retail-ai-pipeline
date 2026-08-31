@@ -98,9 +98,10 @@ def test_dbt_reads_only_after_the_atomic_publish():
     """The dbt consumer resolves published/CURRENT.json, which load() moves
     only after the complete data and report versions have been verified."""
     dbt = dag.get_task("dbt_build")
-    assert dbt.upstream_task_ids == {"publish"}
+    assert dbt.upstream_task_ids == {"publish", "finalize_reports"}
     assert dbt.op_kwargs == {"expected_run_id": "{{ run_id }}"}
     assert "dbt_build" in dag.get_task("publish").downstream_task_ids
+    assert "dbt_build" in dag.get_task("finalize_reports").downstream_task_ids
 
 
 def test_the_finaliser_waits_for_every_writer_and_the_publish():
