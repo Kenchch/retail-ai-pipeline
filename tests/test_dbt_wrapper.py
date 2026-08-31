@@ -5,8 +5,11 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-import duckdb
 import pytest
+
+duckdb = pytest.importorskip(
+    "duckdb", reason="duckdb is only installed for the dbt test job"
+)
 
 from scripts import run_dbt
 

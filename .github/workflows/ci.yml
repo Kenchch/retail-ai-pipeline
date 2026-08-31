@@ -127,5 +127,10 @@ jobs:
       - name: Build and test the dbt consumer
         run: python scripts/run_dbt.py
 
+      # This module needs duckdb, which is intentionally absent from the core
+      # test matrix. Run it here, where the dbt runtime is installed.
+      - name: Test the dbt wrapper
+        run: pytest -q tests/test_dbt_wrapper.py
+
       - name: Audit dbt dependencies
         run: pip-audit -r requirements-dbt.txt --strict
