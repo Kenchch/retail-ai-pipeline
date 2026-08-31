@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+# Pin the gate's rules instead of inheriting Ruff defaults that can change
+# between releases. These cover syntax, imports, and Pyflakes correctness.
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# These entry points add the repository root to sys.path before local imports.
+"scripts/*.py" = ["E402"]
+"dags/*.py" = ["E402"]
+# duckdb is optional in the core matrix, so importorskip must run first.
+"tests/test_dbt_wrapper.py" = ["E402"]

@@ -68,7 +68,6 @@ def _published_src() -> Path:
     return src
 
 
-SRC = _published_src()
 OUT = Path(__file__).resolve().parent / "model"
 
 UNKNOWN_KEY = -1
@@ -214,7 +213,11 @@ def build_dim_product(
         right=False,
         include_lowest=True,
     )
-    p["PriceBand"] = bands.astype(str)
+    p["PriceBand"] = (
+        bands.cat.add_categories(["0. Not applicable"])
+        .fillna("0. Not applicable")
+        .astype(str)
+    )
 
     span = (
         fact.groupby("stock_code")["date_key"]
@@ -408,7 +411,8 @@ def build_fact_sales(
             "Revenue": f["revenue"].round(4),
         }
     )
-    assert (out[["ProductKey", "CustomerKey", "CountryKey"]] != 0).all().all()
+    if not (out[["ProductKey", "CustomerKey", "CountryKey"]] != 0).all().all():
+        raise ValueError("fact_sales contains zero foreign keys")
     return out
 
 
@@ -512,13 +516,31 @@ def build_security(country: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 
 
+def _validate_dimensions(
+    dimensions: tuple[tuple[str, pd.DataFrame, str], ...], dim_date: pd.DataFrame
+) -> None:
+    """Reject invalid semantic dimensions even when Python runs with ``-O``."""
+    for name, df, key in dimensions:
+        if not df[key].is_unique:
+            raise ValueError(f"{name}.{key} is not unique")
+    if not dim_date["Date"].diff().dropna().eq(pd.Timedelta(days=1)).all():
+        raise ValueError(
+            "dim_date is not contiguous - Power BI will refuse to mark it as a "
+            "date table"
+        )
+
+
 def main() -> None:
+    # Resolve the manifest when the command runs, not when this module is
+    # imported. Pure builders therefore remain usable before the first publish,
+    # and a long-lived worker reads the current pointer on each invocation.
+    src = _published_src()
     OUT.mkdir(parents=True, exist_ok=True)
-    print(f"Reading {SRC}")
-    fact_src = pd.read_parquet(SRC / "fact_sales.parquet")
-    prod_src = pd.read_parquet(SRC / "dim_product.parquet")
-    cust_src = pd.read_parquet(SRC / "dim_customer.parquet")
-    quar_src = pd.read_parquet(SRC / "quarantine.parquet")
+    print(f"Reading {src}")
+    fact_src = pd.read_parquet(src / "fact_sales.parquet")
+    prod_src = pd.read_parquet(src / "dim_product.parquet")
+    cust_src = pd.read_parquet(src / "dim_customer.parquet")
+    quar_src = pd.read_parquet(src / "quarantine.parquet")
 
     all_countries = pd.concat([fact_src["country"], quar_src["country"]])
     dim_country = build_dim_country(all_countries)
@@ -577,16 +599,15 @@ def main() -> None:
                 f"{name} has {orphans} orphan keys - fix before publishing"
             )
 
-    for name, df, key in (
-        ("dim_product", dim_product, "ProductKey"),
-        ("dim_customer", dim_customer, "CustomerKey"),
-        ("dim_country", dim_country, "CountryKey"),
-        ("dim_date", dim_date, "Date"),
-        ("dim_quality_rule", dim_rule, "RuleKey"),
-    ):
-        assert df[key].is_unique, f"{name}.{key} is not unique"
-    assert dim_date["Date"].diff().dropna().eq(pd.Timedelta(days=1)).all(), (
-        "dim_date is not contiguous - Power BI will refuse to mark it as a date table"
+    _validate_dimensions(
+        (
+            ("dim_product", dim_product, "ProductKey"),
+            ("dim_customer", dim_customer, "CustomerKey"),
+            ("dim_country", dim_country, "CountryKey"),
+            ("dim_date", dim_date, "Date"),
+            ("dim_quality_rule", dim_rule, "RuleKey"),
+        ),
+        dim_date,
     )
 
     print("\nWriting", OUT)
