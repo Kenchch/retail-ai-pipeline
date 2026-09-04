@@ -1,5 +1,9 @@
 # Adoption measurement, workshop, and the monthly update
 
+> **Illustrative portfolio scenario.** Nothing here has been deployed. Usage
+> telemetry is simulated by `scripts/get_data.py` with a fixed seed to
+> demonstrate the measurement pipeline, not real outcomes.
+
 Owner: business engagement. The metrics below are computed by
 `retail_pipeline/adoption.py` and published to `reports/adoption_report.md` by
 every pipeline run — the definitions here and the definitions in the code are
@@ -60,7 +64,8 @@ each team lead — their own cut, not the average.
 ## Part 2 — The AI-literacy workshop
 
 60 minutes, 8–15 people, mixed technical confidence, no prerequisites. Deck:
-`workshop/ai_literacy_workshop.pptx`. Run twice so far, weeks 3 and 8.
+`workshop/ai_literacy_workshop.pptx`. The simulated scenario models sessions in
+weeks 3 and 8.
 
 **Objective — three things, not eight.** By the end everyone can (1) read a
 recommendation and say whether to trust it, (2) name two things it cannot do,
@@ -100,7 +105,7 @@ the second did. The weekly table in `reports/adoption_report.md` is the source.
 
 ---
 
-## Part 3 — Monthly update (June 2026)
+## Part 3 — Example monthly update (template)
 
 *To Merchandising, Category Management, Online Trading, Marketing, Store Ops and
 Data & AI. Kept to 300 words, because a 900-word update is not read.*
@@ -134,12 +139,12 @@ and the category-hierarchy filter four of you have now asked for.
 
 ---
 
-## Part 4 — For the steering group
+## Part 4 — Example steering-group one-pager
 
 | | |
 |---|---|
-| **Status** | Delivered, in adoption |
-| **Investment** | One engineer, three weeks, existing infrastructure, no new licences |
+| **Status** | Portfolio demonstration (not deployed) |
+| **Illustrative delivery assumption** | One engineer, three weeks, existing infrastructure, no new licences |
 | **Coverage** | The full 3,803-line catalogue |
 | **Evidence base** | 522,566 clean transaction lines; 3.6% of source rows rejected by automated quality rules |
 | **Reach / Activation / CSAT** | 74.2% (target 70%) · 77.4% · 4.23 / 5 |

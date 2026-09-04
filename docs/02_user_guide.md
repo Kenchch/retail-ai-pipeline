@@ -1,5 +1,9 @@
 # Frequently Bought Together — user guide
 
+> **Illustrative portfolio scenario.** Nothing here has been deployed. Usage
+> telemetry is simulated by `scripts/get_data.py` with a fixed seed to
+> demonstrate the measurement pipeline, not real outcomes.
+
 **For:** category managers, merchandisers, online trading, marketing
 **Reading time:** 5 minutes
 

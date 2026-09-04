@@ -1,6 +1,10 @@
 # Brief — Frequently Bought Together
 
-**From:** business engagement  ·  **To:** AI Engineering  ·  **Status:** delivered, in adoption
+> **Illustrative portfolio scenario.** Nothing here has been deployed. Usage
+> telemetry is simulated by `scripts/get_data.py` with a fixed seed to
+> demonstrate the measurement pipeline, not real outcomes.
+
+**From:** business engagement  ·  **To:** AI Engineering  ·  **Status:** portfolio demonstration (not deployed)
 
 This is the document between "Merchandising asked for something" and the code.
 If a requirement below is not testable, that is a defect in this brief.

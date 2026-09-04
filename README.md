@@ -8,6 +8,11 @@ table — plus the business-side work that decides whether any of it gets used: 
 requirements brief, a user guide, an AI-literacy workshop and adoption
 measurement wired into the pipeline itself.
 
+> **Portfolio scenario:** nothing in this repository has been deployed. Usage
+> telemetry is generated deterministically by `scripts/get_data.py` to
+> demonstrate the measurement pipeline; it does not describe real users or
+> business outcomes.
+
 ```bash
 python -m pip install -r requirements.txt
 python scripts/get_data.py           # ~45 MB of transactions + usage telemetry
@@ -33,7 +38,7 @@ Source: UCI **Online Retail** — a UK online giftware retailer, Dec 2010 – De
 | Quarantined by data-quality rules | **19,343 (3.57%)** |
 | Loaded | 522,566 line items · 3,803 products · 4,334 customers · 374 days (305 traded) |
 | Recommendations | 17,083 rows covering the full catalogue |
-| Adoption | 62 licensed users, 5 teams, 12 weeks |
+| Simulated adoption dataset | 62 fictional users, 5 teams, 12 weeks |
 | Runtime | 8.0 s of compute — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top |
 
 The strongest associations are ones a merchandiser would expect — the cheapest
@@ -61,6 +66,30 @@ Three report pages and the model view: [`bi/README.md`](bi/README.md).
 
 Reconciles to £10,247,353.28 over 19,773 orders, and 522,566 loaded + 19,343
 rejected = 541,909 — the source row count.
+
+### Reconciliation with online-retail-analysis-r
+
+[`online-retail-analysis-r`](https://github.com/Kenchch/online-retail-analysis-r)
+uses the same SHA-256-pinned UCI workbook but applies cancellation netting and
+different duplicate handling:
+
+| Bridge | Revenue |
+|---|---:|
+| This pipeline: valid positive sales | £10,247,353.28 |
+| Matched sales removed when a credit note reverses them | −£394,233.81 |
+| Exact duplicate rows retained by the R analysis | +£24,241.34 |
+| **R analysis: cancellation-netted sales** | **£9,877,360.81** |
+
+This pipeline's figure is gross valid positive sales, not cancellation-netted
+revenue. The R project answers the latter question.
+
+## How this was built
+
+Built with AI pair-programming (Claude Code and OpenAI Codex) for drafting,
+refactoring and test scaffolding. I set the problem, designed the pipeline and
+data contracts, chose the quality rules, ran the benchmark, and reviewed and
+edited the code. Commits where an assistant contributed code retain a
+`Co-Authored-By` trailer.
 
 Design and the decisions behind it: [`bi/MODEL.md`](bi/MODEL.md).
 Build it yourself in ~45 minutes: [`bi/BUILD_POWERBI.md`](bi/BUILD_POWERBI.md).
