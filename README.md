@@ -76,12 +76,19 @@ different duplicate handling:
 | Bridge | Revenue |
 |---|---:|
 | This pipeline: valid positive sales | £10,247,353.28 |
-| Matched sales removed when a credit note reverses them | −£394,233.81 |
-| Exact duplicate rows retained by the R analysis | +£24,241.34 |
-| **R analysis: cancellation-netted sales** | **£9,877,360.81** |
+| Difference in accepted positive-sale rows before credit matching | +£24,765.59 |
+| R positive sales before credit matching | £10,272,118.87 |
+| Matched sales removed when a later or same-minute credit note reverses them | −£388,459.01 |
+| **R analysis: cancellation-netted sales** | **£9,883,659.86** |
 
 This pipeline's figure is gross valid positive sales, not cancellation-netted
 revenue. The R project answers the latter question.
+
+The R analysis corrected its credit matching on 2026-09-05 to prevent earlier
+credits from cancelling future purchases, increasing its result by £6,299.05.
+This pipeline's positive-sales total is unchanged.
+The positive-sale selection difference includes the R analysis retaining exact
+duplicates; the full difference is not attributed solely to duplicates.
 
 ## How this was built
 
