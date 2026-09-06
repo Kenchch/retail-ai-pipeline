@@ -77,8 +77,8 @@ ever bought them together**.
 ## Three things it will get wrong
 
 **It will over-recommend the best seller.** WHITE HANGING HEART T-LIGHT HOLDER
-is the recommendation for **69 different products** in the current table, at a
-median lift of 2.3. Some of those are genuine; most are just the effect of a
+is the recommendation for **79 different products** in the current table, at a
+median lift of 1.4. Some of those are genuine; most are just the effect of a
 product that appears in a large share of all baskets. The same happens with any
 promotional item that went into every basket for a fortnight.
 

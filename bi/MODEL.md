@@ -6,7 +6,7 @@ them is where most of the decisions below live.
 
 Built by [`build_star_schema.py`](build_star_schema.py) from
 the published data version (`data/runs/<run_id>/*.parquet`, named by
-`data/CURRENT`); output in `model/` as CSV (build output, not committed).
+`published/CURRENT.json`); output in `model/` as CSV (build output, not committed).
 Measures in [`measures.dax`](measures.dax). Build instructions in
 [`BUILD_POWERBI.md`](BUILD_POWERBI.md).
 

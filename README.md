@@ -2,318 +2,73 @@
 
 [![CI](https://github.com/Kenchch/retail-ai-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/retail-ai-pipeline/actions/workflows/ci.yml)
 
-A nightly pipeline that ingests retail invoice lines, enforces data quality,
-publishes a sales star schema and a "frequently bought together" recommendation
-table — plus the business-side work that decides whether any of it gets used: a
-requirements brief, a user guide, an AI-literacy workshop and adoption
-measurement wired into the pipeline itself.
+A retail analytics portfolio pipeline: invoice lines become a quality-checked
+sales star schema, product recommendations and a Power BI semantic model.
+It demonstrates engineering and adoption reporting; it has not been deployed,
+and all usage telemetry is simulated.
 
-> **Portfolio scenario:** nothing in this repository has been deployed. Usage
-> telemetry is generated deterministically by `scripts/get_data.py` to
-> demonstrate the measurement pipeline; it does not describe real users or
-> business outcomes.
+## What I built
+
+- Row-level quality rules and quarantine with source-row reconciliation.
+- Per-run staging and atomic publication through `published/CURRENT.json`.
+- Basket associations with description-based recommendation fallback.
+- A contracted dbt/DuckDB daily sales mart and a Power BI model.
+- An Airflow DAG, failure recovery tests and reproducible simulated adoption reports.
+
+## Results and evidence
+
+| Measure | Committed full-data result |
+|---|---:|
+| Input invoice lines | 541,909 |
+| Loaded / quarantined | 522,566 / 19,343 (3.57%) |
+| Gross accepted positive sales | £10,247,353.28 |
+| Accepted invoices | 19,773 |
+| Products / recommendation rows | 3,803 / 17,083 |
+
+Evidence: [run metrics](reports/run_metrics.json), [quality report](reports/data_quality_report.md),
+[Power BI model](bi/MODEL.md) and [report pages](bi/README.md).
+
+The [R companion analysis](https://github.com/Kenchch/online-retail-analysis-r)
+reports £9,883,659.86 after matching cancellations. It retains duplicates and
+uses a different acceptance policy; its figure is not this pipeline's revenue.
+The detailed revenue bridge is in [design notes](docs/DESIGN.md#reconciliation-with-online-retail-analysis-r).
+
+## Run it
 
 ```bash
 python -m pip install -r requirements.txt
-python scripts/get_data.py           # ~45 MB of transactions + usage telemetry
-python -m retail_pipeline.pipeline   # ~12 s end to end
+python scripts/get_data.py
+python -m retail_pipeline.pipeline
 pytest -q
 
-# dbt consumer (also required on every Airflow worker)
+# dbt consumer; install on every Airflow worker too
 python -m pip install -r requirements-dbt.txt
 python scripts/run_dbt.py
 ```
 
-Airflow workers additionally use the pinned runtime and security overrides in
-`requirements-airflow.txt`; CI installs that file after Airflow's versioned
-release constraints, then validates the combined environment.
+Airflow additionally requires `requirements-airflow.txt` and its versioned release
+constraints. See [runtime and orchestration details](docs/DESIGN.md#how-it-works).
 
-## Results from a full run
+## Limits
 
-Source: UCI **Online Retail** — a UK online giftware retailer, Dec 2010 – Dec 2011.
+- Publication uses a single machine and local storage.
+- Warehouse and downstream dbt promotion are separate transaction boundaries.
+- Revenue is gross accepted positive sales; cancellation netting is in the R project.
+- Offline associations do not establish recommendation impact or causal uplift.
+- Adoption metrics use generated telemetry, not real users.
+- Power BI setup and the workshop describe a portfolio scenario.
 
-| | |
-|---|---|
-| Rows read | 541,909 line items across 25,900 invoices |
-| Quarantined by data-quality rules | **19,343 (3.57%)** |
-| Loaded | 522,566 line items · 3,803 products · 4,334 customers · 374 days (305 traded) |
-| Recommendations | 17,083 rows covering the full catalogue |
-| Simulated adoption dataset | 62 fictional users, 5 teams, 12 weeks |
-| Runtime | 9.3 s of compute — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top |
+## Data and licence
 
-The strongest associations are ones a merchandiser would expect — the cheapest
-sanity check there is:
+Code is MIT. UCI Online Retail (Chen, 2015) is CC BY 4.0.
+The downloader uses Databricks' Spark: The Definitive Guide CSV mirror and verifies
+a pinned SHA-256. Raw data is downloaded locally and excluded from Git.
+See [NOTICE](NOTICE) for attribution and transformations.
 
-```
-LANDMARK FRAME COVENT GARDEN  ->  LANDMARK FRAME OXFORD STREET   lift 196.4   30 baskets
-CHILDS GARDEN SPADE BLUE      ->  CHILDS GARDEN SPADE PINK       lift  95.1   40 baskets
-```
+[Design notes](docs/DESIGN.md) · [User guide](docs/02_user_guide.md) ·
+[Adoption and communication](docs/03_adoption_and_comms.md)
 
-Outputs: [`reports/data_quality_report.md`](reports/data_quality_report.md) ·
-[`reports/adoption_report.md`](reports/adoption_report.md) · `reports/run_metrics.json`
-
-## Power BI semantic layer
-
-The warehouse this pipeline publishes is consumed by a Power BI semantic model
-in [`bi/`](bi/) — star schema with surrogate keys and an unknown member, a
-calendar built for time intelligence, a second fact table for data quality
-joined on conformed dimensions, a many-to-many bridge for the quality rules, a
-35-measure DAX library and dynamic row-level security over an entitlement table.
-
-![Power BI sales overview](bi/screenshots/page1-sales.png)
-
-Three report pages and the model view: [`bi/README.md`](bi/README.md).
-
-Reconciles to £10,247,353.28 over 19,773 orders, and 522,566 loaded + 19,343
-rejected = 541,909 — the source row count.
-
-### Reconciliation with online-retail-analysis-r
-
-[`online-retail-analysis-r`](https://github.com/Kenchch/online-retail-analysis-r)
-uses the same SHA-256-pinned UCI workbook but applies cancellation netting and
-different duplicate handling:
-
-| Bridge | Revenue |
-|---|---:|
-| This pipeline: valid positive sales | £10,247,353.28 |
-| Difference in accepted positive-sale rows before credit matching | +£24,765.59 |
-| R positive sales before credit matching | £10,272,118.87 |
-| Matched sales removed when a later or same-minute credit note reverses them | −£388,459.01 |
-| **R analysis: cancellation-netted sales** | **£9,883,659.86** |
-
-This pipeline's figure is gross valid positive sales, not cancellation-netted
-revenue. The R project answers the latter question.
-
-The R analysis corrected its credit matching on 2026-09-05 to prevent earlier
-credits from cancelling future purchases, increasing its result by £6,299.05.
-This pipeline's positive-sales total is unchanged.
-The positive-sale selection difference includes the R analysis retaining exact
-duplicates; the full difference is not attributed solely to duplicates.
-
-## Design notes
-
-Design and the decisions behind it: [`bi/MODEL.md`](bi/MODEL.md).
-Build it yourself in ~45 minutes: [`bi/BUILD_POWERBI.md`](bi/BUILD_POWERBI.md).
-
-## dbt analytics consumer
-
-[`dbt/`](dbt/) is a deliberately small downstream consumer of the published
-warehouse. `scripts/run_dbt.py` resolves `published/CURRENT.json` through the
-pipeline's own containment-checked helpers, then passes the data and report
-directories from that one manifest to dbt-duckdb. DuckDB queries the Parquet
-and JSON files in place; the existing pandas transformations and atomic publish
-path are unchanged.
-
-dbt builds into a unique candidate DuckDB file. Only a completely successful
-`dbt build` — model, contract and every test — is exposed by atomically replacing
-`dbt/CURRENT.json`; it names an immutable file under `dbt/runs/`. A failed build
-leaves the previous validated mart untouched, an old WAL cannot contaminate the
-new file, and Windows BI readers can finish against their old version. Every mart row also carries the published `run_id`,
-and a cleared historical Airflow task refuses to validate a newer run that
-happens to be current.
-
-The project builds one contracted model, `mart_daily_sales`: one row per
-calendar day with revenue, distinct orders and guest-revenue share. It starts
-from the continuous `dim_date`, so closed days are represented by zeroes rather
-than disappearing. The mart casts the timestamp-backed warehouse `date_key` to
-a semantic `DATE`, and its enforced contract checks every output name and type.
-
-`dbt build` also checks source keys, fact-to-dimension relationships, the input
-fingerprint record, and row conservation. The conservation assertion compares
-the two published Parquet counts with
-the configured raw input's `run_metrics.inputs[...].rows` from the report
-version bound in the same manifest. It proves that the published files agree
-with that run's recorded input count; the fixed 541,909-row reference result
-above remains a documented benchmark rather than a hard-coded test that would reject a valid
-replacement dataset.
-
-## How it works
-
-```
-extract → data quality → star schema → recommend ─┐
-                                                  ├→ run metrics → publish ─┬→ dbt build
-                          adoption (telemetry) ───┘                         └→ finalize
-```
-
-`recommend` and `adoption` are separate branches — adoption reads the usage
-telemetry and needs nothing the extract produces. They meet at `run metrics`,
-which builds the report version from the staged tables; `publish` is the only
-task that writes to the warehouse, and `finalize` points `reports/CURRENT` at
-the version or archives it.
-
-Four modules, scheduled as twelve Airflow tasks
-([`dags/`](dags/retail_pipeline_dag.py)) so a failure names the stage that broke.
-Every stage computes into per-run staging; a single `publish` task is the only
-thing that writes to the warehouse.
-
-The DAG's wiring is tested — `tests/test_dag.py` asserts the trigger rules and
-the edges, because every bug it has carried has been a wiring bug rather than a
-logic one, and none of those show up in a unit test of a stage function.
-Airflow is not in `requirements.txt` (nothing but `dags/` imports it), so those
-tests skip locally and CI installs it in a job of its own.
-Because `dbt_build` is an unconditional DAG task, every Airflow worker must
-install `requirements.txt`, `requirements-dbt.txt` and
-`requirements-airflow.txt`; CI verifies that combined environment against
-Airflow 3.3.1, audits the installed worker dependencies, and then proves that
-the DAG parses.
-
-**Scope: a single-machine Airflow, `LocalExecutor` or `SequentialExecutor`.**
-Staging, the warehouse and the reports are all local `pathlib` paths written
-with `os.replace()` and `sqlite3.connect()`. That is a deliberate choice for a
-portfolio project, and it is a real constraint rather than a detail: under
-CeleryExecutor or KubernetesExecutor each task can land on a different worker,
-where the Parquet an upstream task wrote is simply not there, and neither a
-blob URI nor a network path is something `Path.mkdir()` or SQLite will accept.
-Running this distributed means moving staging and the report versions onto
-object storage (fsspec) and the warehouse onto a shared database — the stage
-functions would not change, but every path in `config.yaml` would. Adding that
-here would be cloud infrastructure in service of a demo.
-
-**The guarantee, stated precisely.** A run is a *version*. Every Parquet file
-and the SQLite database are written into `data/runs/<run_id>/`. Before the
-`publish` stage succeeds, nothing in there is visible to consumers; publishing
-replaces one pointer atomically, so readers see the previous version in full or
-this one in full, never a mixture. A failure before that point deletes the new
-version and needs no rollback. dbt is deliberately downstream: if its contract
-or data tests fail, the warehouse has already refreshed and the DAG goes red,
-but the candidate mart is not promoted and the previous validated DuckDB stays
-available.
-
-SQLite is still swapped in one transaction inside that version — tables built
-as `<name>__new`, then dropped, renamed and indexed inside a single
-`BEGIN IMMEDIATE` — and it carries the run_id in a `_publication` table, which
-the publish checks against the directory before moving the pointer.
-
-This replaced a SQLite commit followed by one `os.replace` per Parquet file. N
-renames can half-succeed, and injecting an `OSError` into the second one
-produced exactly what that implies: SQLite on tonight's run, `fact_sales` on
-tonight's, `dim_product` and `quarantine` still on last night's — and since the
-report finaliser took the SQLite stamp as its authority, `reports/CURRENT`
-advanced as well. Anything reading the directory got tonight's facts joined
-against last night's dimensions, in a run that reported success. Retirement is
-structural now too: a table that stops being published is simply not written
-into the new version, so the two layers cannot retire out of step.
-
-**Reports are versioned, and published by a pointer.** Every run writes its
-three reports into `reports/runs/<run_id>/`, all three built from the same
-staged tables, and `reports/CURRENT` — a one-line file replaced with a single
-`os.replace` — names the version a reader should read. Promoting three files
-one at a time was not good enough: three `os.replace` calls can half-succeed,
-and on Windows they routinely do, because replacing a file another process
-holds open raises `PermissionError`. That left one new report beside two old
-ones with nothing recording it. A version is complete before anything points at
-it, so `reports/CURRENT` names last night's version or tonight's, never a
-mixture. A run that fails is archived to `reports/failed_runs/<run_id>/` and
-never becomes current. (The three files at the top of `reports/` are a copy of
-the current version, committed so a reader does not have to clone and run the
-pipeline; each one names its `run_id`.)
-
-**One pointer, both trees.** `published/CURRENT.json` names the data version,
-the report version and the run they both belong to, and it is replaced with a
-single `os.replace`. Every consumer resolves it — `published_data_dir`,
-`published_reports`, `warehouse_path`, and `bi/build_star_schema.py` through
-them — so nothing can observe tonight's warehouse beside last night's reports.
-
-There used to be two pointers, `data/CURRENT` and `reports/CURRENT`, flipped
-one after the other, and between them that mixture was exactly what a consumer
-saw. No transaction spans two files, so the fix was not to order the writes
-better but to stop having two. Both files are still written, as compatibility
-caches and as the internal signal that each tree passed verification; nothing
-authoritative reads them, and corrupting either does not move what a consumer
-sees. The two trees keep their own directories and their own retention — three
-markdown files are worth keeping for months, half a gigabyte of Parquet is not
-— because the manifest names paths rather than merging them.
-
-Every run still logs both ids, so a mismatch stays visible in the log:
-
-```
-Done in 12.2s | warehouse run local_20260819T094207619994 | reports run local_20260819T094207619994
-```
-
-Two different ids is a warehouse ahead of its reports, and re-running the
-finaliser publishes the version the data pointer already names.
-
-**Data quality (9 rules, 4 dimensions).** Cancellations, non-positive quantities
-and prices, duplicates, price outliers and non-product stock codes are
-**quarantined** — kept in a table with the rules they broke, not deleted, so a
-rule that turns out to be too aggressive can be relaxed. Missing customer ids
-(24.9% of rows — guest checkout) and blank descriptions are **flagged but kept**:
-rejecting them would discard a quarter of the basket evidence to satisfy a rule
-only customer analytics cares about. Above a configured rejection rate the run
-**fails before loading**, so a broken extract leaves last night's data intact.
-
-**Star schema.** `fact_sales` carries measures and keys only. `dim_date` is a
-continuous calendar — this retailer is shut on Saturdays, and a dimension built
-from observed dates would omit 53 of them and hand BI six-day weeks.
-
-**Recommendations, two signals.** Co-purchase rules from transactions
-(structured) ranked by **lift**, not raw co-occurrence — ranking by count makes
-the best sellers the recommendation for everything. TF-IDF over product
-description text (unstructured) covers the long tail that never reaches the
-support threshold. Every row carries a `method` column so the two are never
-conflated.
-
-The population for support and confidence is **every** basket, including ones
-holding a single item. A basket where A was bought alone is evidence against
-"A → B", so dropping it inflates the rule. Three baskets, worked by hand:
-
-```
-{A}   {A, B}   {A, B, C}          all baskets = 3;  A in 3, B in 2, C in 1
-
-support(A,B)    = 2/3 = 0.67
-confidence(A→B) = 2/3 = 0.67      not 2/2 — the {A} basket stays in
-lift(A,B)       = 0.67 / (2/3) = 1.0
-```
-
-`max_basket_size` filters pair *generation* only, for the same reason: a
-1,107-item wholesale order would contribute 612k pairs of things that shared a
-pallet, but the products in it were still sold. Both figures are therefore
-conservative rather than inflated. `test_single_item_baskets_count_in_the_denominator`
-pins the arithmetic above.
-
-**Adoption.** Reach, activation, action rate and CSAT, weekly and by team.
-Activation is the one that matters — a view changes nothing. A metric with no
-data reports "–", never 0: nobody answering the survey is not everybody being
-unhappy.
-
-## The business-side half
-
-| | |
-|---|---|
-| [Brief](docs/01_engineering_brief.md) | The problem, explicit non-goals, 7 requirements with acceptance criteria |
-| [User guide](docs/02_user_guide.md) | How to read lift · three things the tool gets wrong · FAQ |
-| [Adoption & comms](docs/03_adoption_and_comms.md) | Metric definitions, workshop runsheet, monthly update, roadmap |
-| [Workshop deck](workshop/ai_literacy_workshop.pdf) | 6 slides, 60 minutes ([`.pptx`](workshop/ai_literacy_workshop.pptx)) |
-
-Each one leads with what the tool **cannot** do — the brief lists non-goals, the
-guide has "three things it will get wrong", the workshop opens on a real bad
-recommendation. That is not modesty; it is the only way the rest gets believed.
-
-> **On the usage data.** The event log is generated by `scripts/get_data.py`,
-> because this has not been deployed to real users. The schema is the production
-> schema and the metrics are computed from it for real; the production sources
-> (Power BI usage metrics, merchandising audit log, feedback button) are
-> documented in that script. Swapping in a real extract is one line in
-> `config.yaml`. An adoption number of unclear provenance is worse than none.
-
-## Tests
-
-The suite is concentrated on the failures that are *silent*: a quality rule that
-stops firing, a team that drops out of the adoption report, a week with no
-activity that closes the gap and shifts every later week's label, a metric with
-no data reported as a zero. Nothing crashes when those regress — bad rows just
-start flowing into the warehouse, which is why the tests exist.
-
-## Stack
-
-Python · pandas · scikit-learn · Parquet · SQLite · dbt-duckdb · Airflow (single machine,
-see above) · Git. SQLite stands in for a served warehouse such as Azure SQL:
-the star schema and the DAX over it would carry across unchanged, but the load
-path itself would not — `BEGIN IMMEDIATE`, `ALTER TABLE ... RENAME` and the
-local-filesystem Parquet swap are SQLite-and-one-host specific, so it is a
-rewrite of `load()`, not a connection string. All thresholds and the team
-roster live in `config.yaml`; there are no magic numbers in the code.
-
----
-
-Data: UCI Machine Learning Repository — *Online Retail* (Chen, D., 2015).
+Documentation examples are computed in [doc_figures.json](reports/doc_figures.json).
+After downloading the source, run `python scripts/verify_doc_figures.py`, then
+`python scripts/build_workshop.py` (requires python-pptx) to refresh the editable
+workshop. Its PDF is a rendered preview; the PPTX retains editable text and charts.

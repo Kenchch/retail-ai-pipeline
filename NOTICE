@@ -28,3 +28,5 @@ copies of it.
 This file exists because the note used to sit at the bottom of LICENSE,
 which stopped GitHub's licence detector recognising the text as MIT - the
 repository was labelled "Other". A licence file should be the licence.
+
+Downloaded from the databricks/Spark-The-Definitive-Guide mirror of the UCI file; sha256 pinned in scripts/get_data.py.

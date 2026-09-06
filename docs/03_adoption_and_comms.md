@@ -90,18 +90,15 @@ puts them in diagnosis mode and answers the question they are actually holding
 segment and email it. Never cut the exercise.
 
 **The exercise row that matters** is WHITE METAL LANTERN → WHITE HANGING HEART
-T-LIGHT HOLDER: 63 baskets, confidence 0.28, lift 2.70. It looks like a finding
-until you notice the same t-light holder is recommended for 69 other products —
-it is in a large share of every basket, so it pairs with everything. Every group
-has had someone accept it before spotting that.
+T-LIGHT HOLDER: 63 baskets, confidence 0.19, lift 1.65. It looks like a finding
+until you notice the same t-light holder is recommended for 79 products —
+it is in a large share of every basket, so it pairs with everything. Use this row to discuss popularity versus affinity.
 
-**What happened:** weekly reach went 16% → 34% after the week-3 session and 27%
-→ 44% after the week-8 session. Only the second one held. The week-3 bump decayed
-immediately — 34% → 26% → 23% — and reach did not reach 34% again until the
-second workshop five weeks later. The week-8 bump held and then grew (37%, 45%,
-45%, 42% over the following four weeks). A spike that decays means people looked
-once, which is not adoption; by that test the first workshop did not convert and
-the second did. The weekly table in `reports/adoption_report.md` is the source.
+**How to read this report:** the weekly reach series is generated telemetry,
+so the changes around the illustrative workshop dates are not evidence of impact.
+With real data, inspect sustained use and missing observations, and compare against
+a suitable control before attributing changes to training. The weekly table in
+`reports/adoption_report.md` demonstrates the calculation, not a causal result.
 
 ---
 

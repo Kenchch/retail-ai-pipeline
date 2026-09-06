@@ -26,6 +26,7 @@ reports/*
 !reports/data_quality_report.md
 !reports/adoption_report.md
 !reports/run_metrics.json
+!reports/doc_figures.json
 reports/runs/
 reports/failed_runs/
 reports/CURRENT
