@@ -90,13 +90,7 @@ This pipeline's positive-sales total is unchanged.
 The positive-sale selection difference includes the R analysis retaining exact
 duplicates; the full difference is not attributed solely to duplicates.
 
-## How this was built
-
-Built with AI pair-programming (Claude Code and OpenAI Codex) for drafting,
-refactoring and test scaffolding. I set the problem, designed the pipeline and
-data contracts, chose the quality rules, ran the benchmark, and reviewed and
-edited the code. Commits where an assistant contributed code retain a
-`Co-Authored-By` trailer.
+## Design notes
 
 Design and the decisions behind it: [`bi/MODEL.md`](bi/MODEL.md).
 Build it yourself in ~45 minutes: [`bi/BUILD_POWERBI.md`](bi/BUILD_POWERBI.md).
