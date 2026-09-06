@@ -248,13 +248,13 @@ def task_run_metrics(**context):
     n_clean, n_q = len(fact), len(quarantine)
     write_run_metrics(
         cfg,
-        n_raw=n_clean + n_q,
+        n_raw=len(_read_staged(cfg, "raw", run_id, "extract")),
         n_quarantined=n_q,
         n_clean=n_clean,
         n_products=len(dim_product),
         recs=recs,
         adoption_headline=headline,
-        compute_seconds=0.0,  # per-task durations live in the Airflow UI
+        compute_seconds=None,  # per-task durations live in the Airflow UI
         dest=reports_dir(cfg, run_id),
         run_id=run_id,
     )
@@ -309,30 +309,8 @@ def task_clear_staging(**context):
 
 
 def task_watcher(**context):
-    """Fail the DAG run when anything in it failed.
-
-    Airflow decides a run's state from its LEAF tasks. Both leaves here run on
-    `all_done` - the report finaliser has to, or a failed run's diagnostics are
-    never archived, and the staging pruner has to, or old hand-off directories
-    accumulate forever. Both then succeed on a failed run, so every leaf is
-    green and the run was marked SUCCESS with a failed quality gate inside it.
-    Nothing in the UI, and nothing in an alert wired to run state, would have
-    said otherwise.
-
-    This is Airflow's own watcher pattern for exactly that situation:
-    `one_failed` against every other task, so it is SKIPPED on a clean run and
-    becomes the failing leaf on a dirty one. It deliberately does no work -
-    raising is the whole job, and anything else it did would be work that only
-    happens on failures.
-    """
-    failed = [
-        ti.task_id
-        for ti in context["dag_run"].get_task_instances()
-        if ti.state == "failed"
-    ]
-    raise AirflowException(
-        "DAG run failed: " + (", ".join(sorted(failed)) or "an upstream task failed")
-    )
+    """Fail this leaf when the one_failed trigger detects an upstream failure."""
+    raise AirflowException("an upstream task failed")
 
 
 def task_prune_staging(**_):

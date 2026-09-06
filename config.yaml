@@ -7,7 +7,7 @@ paths:
   data_runs: data/runs           # one directory per run: parquet + retail.db
   processed: data/processed      # legacy path, kept for the pre-version layout
   staging: data/staging          # DAG hand-off only - never published
-  warehouse: data/warehouse/retail.db   # legacy path; see data/CURRENT
+  warehouse: data/warehouse/retail.db   # legacy path; see published/CURRENT.json
   reports: reports
 
 extract:

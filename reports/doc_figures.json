@@ -1,0 +1,21 @@
+{
+  "pairs": {
+    "lantern": {
+      "source": "WHITE METAL LANTERN",
+      "target": "WHITE HANGING HEART T-LIGHT HOLDER",
+      "baskets": 63,
+      "confidence": 0.19,
+      "lift": 1.65
+    },
+    "spade": {
+      "source": "CHILDS GARDEN SPADE PINK",
+      "target": "CHILDS GARDEN SPADE BLUE",
+      "baskets": 40,
+      "confidence": 0.48,
+      "lift": 95.11
+    }
+  },
+  "t_light_products": 79,
+  "t_light_median_lift": 1.4,
+  "catalogue_coverage_pct": 100.0
+}

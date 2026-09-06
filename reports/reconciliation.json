@@ -1,0 +1,10 @@
+{
+  "source_sha256": "a2f79bbdd4463df6db8a3f5a50b9c980ae8f645a370bf5e2c0d6097f9e817b05",
+  "python_positive_revenue": 10247353.28,
+  "r_positive_revenue": 10272118.873,
+  "duplicate_rows": 5223,
+  "duplicate_revenue": 24765.59,
+  "pads_rows": 3,
+  "pads_revenue": 0.003,
+  "scope": "Positive-sale selection only; cancellation netting is in the R analysis."
+}

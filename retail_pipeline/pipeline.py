@@ -329,6 +329,7 @@ def check_quality(
             f"Quarantine rate {rate:.1%} exceeds the {cfg['quality']['max_quarantine_rate']:.0%} "
             "ceiling - refusing to load. Investigate the source extract."
         )
+    assert len(clean) + len(quarantine) == len(df), "Quality filtering lost source rows"
     return clean, quarantine, results
 
 
@@ -556,7 +557,7 @@ def _input_fingerprint(cfg: dict) -> dict:
             rows = len(df)
         else:
             payload = p.read_bytes()
-            rows = payload.count(b"\n") - 1
+            rows = len(pd.read_csv(p, usecols=[0]))
 
         out[p.name] = {
             "sha256": hashlib.sha256(payload).hexdigest()[:16],
@@ -627,10 +628,17 @@ def _stage_tables(conn, tables: dict[str, pd.DataFrame]) -> None:
         df.to_sql(f"{name}__new", conn, if_exists="replace", index=False)
 
 
+def quote_ident(name: str) -> str:
+    """Quote a SQLite identifier, including embedded double quotes."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _swap_tables(conn, tables: dict[str, pd.DataFrame]) -> None:
     for name in tables:
-        conn.execute(f'DROP TABLE IF EXISTS "{name}"')
-        conn.execute(f'ALTER TABLE "{name}__new" RENAME TO "{name}"')
+        conn.execute(f"DROP TABLE IF EXISTS {quote_ident(name)}")
+        conn.execute(
+            f"ALTER TABLE {quote_ident(name + '__new')} RENAME TO {quote_ident(name)}"
+        )
 
 
 def _rebuild_indexes(conn) -> None:
@@ -696,7 +704,7 @@ def _retire_unpublished(conn, tables: dict[str, pd.DataFrame]) -> list[str]:
     retired = sorted(previous - set(tables))
     for gone in retired:
         if gone in present:
-            conn.execute(f'DROP TABLE IF EXISTS "{gone}"')
+            conn.execute(f"DROP TABLE IF EXISTS {quote_ident(gone)}")
         log.info("Retired %s - no longer published", gone)
     conn.execute("DELETE FROM _published")
     conn.executemany(
@@ -831,7 +839,7 @@ def write_run_metrics(
     n_products: int,
     recs: pd.DataFrame,
     adoption_headline: pd.DataFrame,
-    compute_seconds: float,
+    compute_seconds: float | None,
     dest: Path | None = None,
     run_id: str | None = None,
 ) -> dict:
@@ -873,11 +881,19 @@ def write_run_metrics(
         # can move without a complete version describing it - so it can only
         # ever cover the compute. The publish is a few seconds more; the log
         # line at the end of run() reports the total.
-        "compute_seconds": round(compute_seconds, 1),
+        "compute_seconds": round(compute_seconds, 1)
+        if compute_seconds is not None
+        else None,
     }
     (dest or cfg["paths"]["reports"]).mkdir(parents=True, exist_ok=True)
     ((dest or cfg["paths"]["reports"]) / "run_metrics.json").write_text(
         json.dumps(metrics, indent=2, default=str), encoding="utf-8"
+    )
+    from retail_pipeline.doc_figures import document_figures
+
+    ((dest or cfg["paths"]["reports"]) / "doc_figures.json").write_text(
+        json.dumps(document_figures(recs, n_products), indent=2, allow_nan=False),
+        encoding="utf-8",
     )
     return metrics
 

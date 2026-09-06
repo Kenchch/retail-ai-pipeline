@@ -48,18 +48,9 @@ def test_the_watcher_is_the_only_task_that_can_fail_a_clean_run():
 
 
 def test_the_watcher_raises():
-    """It does no work. Raising is the job."""
-
-    class _TI:
-        def __init__(self, task_id, state):
-            self.task_id, self.state = task_id, state
-
-    class _Run:
-        def get_task_instances(self):
-            return [_TI("data_quality_gate", "failed"), _TI("extract", "success")]
-
-    with pytest.raises(AirflowException, match="data_quality_gate"):
-        task_watcher(dag_run=_Run())
+    """The failure leaf requires no database-backed DagRun methods."""
+    with pytest.raises(AirflowException, match="an upstream task failed"):
+        task_watcher()
 
 
 def test_the_run_cannot_be_green_while_a_task_is_red():
