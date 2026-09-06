@@ -40,8 +40,10 @@ if __name__ == "__main__":
     assert duplicates.loc[extras.index[~pads]].all()
     assert len(extras.loc[~pads]) == 5223
     assert len(extras.loc[pads]) == 3
+
     def revenue(rows):
         return round(float((rows.quantity * rows.unit_price).sum()), 3)
+
     report = {
         "source_sha256": EXPECTED_SHA256,
         "python_positive_revenue": revenue(clean),

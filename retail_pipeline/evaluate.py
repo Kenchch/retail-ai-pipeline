@@ -109,8 +109,13 @@ def main() -> None:
     cfg = load_config()
     clean, _, _ = check_quality(extract(cfg), cfg)
     result = evaluate(clean, cfg, args.cutoff, args.k)
-    result["source_sha256"] = hashlib.sha256(cfg["paths"]["raw"].read_bytes()).hexdigest()
-    result["environment"] = {"pandas": pd.__version__, "scikit-learn": version("scikit-learn")}
+    result["source_sha256"] = hashlib.sha256(
+        cfg["paths"]["raw"].read_bytes()
+    ).hexdigest()
+    result["environment"] = {
+        "pandas": pd.__version__,
+        "scikit-learn": version("scikit-learn"),
+    }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(result, indent=2, allow_nan=False), encoding="utf-8"
