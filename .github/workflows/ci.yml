@@ -86,7 +86,7 @@ jobs:
         run: pytest -q tests/test_dag.py
 
       - name: Audit the actual worker environment
-        run: pip-audit --local --strict
+        run: pip-audit --local --strict --skip-editable
 
       # A skip here would be silent: pytest.importorskip means the file passes
       # by not running, so the job could go green having tested nothing. This
