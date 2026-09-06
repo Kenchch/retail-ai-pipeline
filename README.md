@@ -91,3 +91,11 @@ Documentation examples are computed in [doc_figures.json](reports/doc_figures.js
 After downloading the source, run `python scripts/verify_doc_figures.py`, then
 `python scripts/build_workshop.py` (requires python-pptx) to refresh the editable
 workshop. Its PDF is a rendered preview; the PPTX retains editable text and charts.
+
+## How this was built
+
+I set the problem, the data contracts and the quality rules, ran the benchmarks
+and reviewed every diff; Claude Code and OpenAI Codex drafted code, refactored
+and scaffolded tests. The full note — including the `Co-Authored-By` trailers
+removed from this repository's history on 6 September 2026 — is on my profile:
+[How I use AI tools](https://github.com/Kenchch/Kenchch#how-i-use-ai-tools).
