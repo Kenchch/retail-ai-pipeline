@@ -39,7 +39,7 @@ Source: UCI **Online Retail** — a UK online giftware retailer, Dec 2010 – De
 | Loaded | 522,566 line items · 3,803 products · 4,334 customers · 374 days (305 traded) |
 | Recommendations | 17,083 rows covering the full catalogue |
 | Simulated adoption dataset | 62 fictional users, 5 teams, 12 weeks |
-| Runtime | 8.0 s of compute — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top |
+| Runtime | 9.3 s of compute — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top |
 
 The strongest associations are ones a merchandiser would expect — the cheapest
 sanity check there is:
@@ -147,7 +147,7 @@ which builds the report version from the staged tables; `publish` is the only
 task that writes to the warehouse, and `finalize` points `reports/CURRENT` at
 the version or archives it.
 
-Three modules, scheduled as twelve Airflow tasks
+Four modules, scheduled as twelve Airflow tasks
 ([`dags/`](dags/retail_pipeline_dag.py)) so a failure names the stage that broke.
 Every stage computes into per-run staging; a single `publish` task is the only
 thing that writes to the warehouse.

@@ -91,7 +91,7 @@ disappearing from the report.
 ## Non-functional
 
 All thresholds and the team roster in `config.yaml`; no magic numbers in code.
-Full refresh inside the overnight window — 8.0 s of compute on the reference
+Full refresh inside the overnight window — 9.3 s of compute on the reference
 run, with `compute_seconds` in `reports/run_metrics.json` as the authoritative
 figure. It covers everything up to the publish and not the publish itself,
 because that file is written before the data moves - a version has to be
