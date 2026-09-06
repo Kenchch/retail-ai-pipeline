@@ -1,0 +1,35 @@
+{
+  "cutoff": "2011-10-01",
+  "k": 5,
+  "training_rows": 357779,
+  "test_rows": 164787,
+  "training_last_timestamp": "2011-09-30T17:22:00",
+  "test_first_timestamp": "2011-10-02T10:32:00",
+  "cross_boundary_invoices_excluded": 0,
+  "definition": "Each product in a held-out basket of at least two distinct products is a query; a hit retrieves any other product in that basket. All models use training data only.",
+  "models": {
+    "hybrid": {
+      "queries": 161844,
+      "hits": 91119,
+      "hit_rate_at_k": 0.5630051160376659,
+      "query_coverage": 0.951935196856232
+    },
+    "most_popular": {
+      "queries": 161844,
+      "hits": 85516,
+      "hit_rate_at_k": 0.5283853587405155,
+      "query_coverage": 1.0
+    },
+    "content_tfidf": {
+      "queries": 161844,
+      "hits": 83610,
+      "hit_rate_at_k": 0.5166085860458219,
+      "query_coverage": 0.951935196856232
+    }
+  },
+  "source_sha256": "a2f79bbdd4463df6db8a3f5a50b9c980ae8f645a370bf5e2c0d6097f9e817b05",
+  "environment": {
+    "pandas": "3.0.5",
+    "scikit-learn": "1.9.0"
+  }
+}

@@ -27,6 +27,8 @@ reports/*
 !reports/adoption_report.md
 !reports/run_metrics.json
 !reports/doc_figures.json
+!reports/reconciliation.json
+!reports/evaluation.json
 reports/runs/
 reports/failed_runs/
 reports/CURRENT

@@ -76,7 +76,7 @@ different duplicate handling:
 | Bridge | Revenue |
 |---|---:|
 | This pipeline: valid positive sales | £10,247,353.28 |
-| Difference in accepted positive-sale rows before credit matching | +£24,765.59 |
+| Exact duplicate invoice lines retained in R, quarantined by Python (5,223 rows; plus 3 PADS lines at £0.001) | +£24,765.59 |
 | R positive sales before credit matching | £10,272,118.87 |
 | Matched sales removed when a later or same-minute credit note reverses them | −£388,459.01 |
 | **R analysis: cancellation-netted sales** | **£9,883,659.86** |
@@ -84,8 +84,6 @@ different duplicate handling:
 This pipeline's figure is gross valid positive sales, not cancellation-netted
 revenue. The R project answers the latter question.
 
-The positive-sale selection difference includes the R analysis retaining exact
-duplicates; the full difference is not attributed solely to duplicates.
 
 ## Design notes
 
@@ -314,3 +312,9 @@ roster live in `config.yaml`; there are no magic numbers in the code.
 ---
 
 Data: UCI Machine Learning Repository — *Online Retail* (Chen, D., 2015).
+
+The positive-sale bridge was independently recomputed by
+[`scripts/check_revenue_bridge.py`](https://github.com/Kenchch/retail-ai-pipeline/blob/main/scripts/check_revenue_bridge.py):
+5,223 duplicate lines contribute £24,765.59 and three PADS lines contribute £0.003.
+Totals in the table are rounded to pence. This bridge reconciles revenue only;
+invoice counts use different cancellation policies.

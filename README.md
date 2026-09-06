@@ -33,6 +33,25 @@ reports £9,883,659.86 after matching cancellations. It retains duplicates and
 uses a different acceptance policy; its figure is not this pipeline's revenue.
 The detailed revenue bridge is in [design notes](docs/DESIGN.md#reconciliation-with-online-retail-analysis-r).
 
+## Temporal recommendation evaluation
+
+Training uses accepted lines before 2011-10-01; evaluation uses later baskets.
+Each product in a basket with at least two distinct products is a query, and a
+hit retrieves another product in that basket. All three models use training data only.
+
+| Model | Hit-rate@5 | Query coverage |
+|---|---:|---:|
+| Hybrid | 56.30% | 95.19% |
+| Most popular | 52.84% | 100.00% |
+| Content TF-IDF | 51.66% | 95.19% |
+
+The 161,844 queries are basket-completion queries, not independent customers.
+This offline comparison does not measure sales uplift. The
+[evaluation artifact](reports/evaluation.json) records counts, cutoff, source hash
+and library versions. Reproduce with `python -m retail_pipeline.evaluate` after
+fetching the data. The [revenue reconciliation](reports/reconciliation.json) can
+be regenerated with `python scripts/check_revenue_bridge.py`.
+
 ## Run it
 
 ```bash
