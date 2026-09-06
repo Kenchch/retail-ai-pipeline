@@ -76,7 +76,9 @@ jobs:
             --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.1/constraints-3.11.txt"
           pip install -r requirements-airflow.txt \
             -r requirements.txt -r requirements-dbt.txt pip-audit
-          pip install -e . --no-deps
+          # The project is deliberately NOT installed here: this job stands in for
+          # an Airflow worker, where dags/retail_pipeline_dag.py bootstraps its own
+          # sys.path because the scheduler loads dags/ on its own.
           pip check
 
       - name: The worker has the dbt runtime used by the DAG
@@ -86,7 +88,7 @@ jobs:
         run: pytest -q tests/test_dag.py
 
       - name: Audit the actual worker environment
-        run: pip-audit --local --strict --skip-editable
+        run: pip-audit --local --strict
 
       # A skip here would be silent: pytest.importorskip means the file passes
       # by not running, so the job could go green having tested nothing. This
