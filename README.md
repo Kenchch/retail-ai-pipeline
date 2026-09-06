@@ -55,7 +55,7 @@ be regenerated with `python scripts/check_revenue_bridge.py`.
 ## Run it
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 python scripts/get_data.py
 python -m retail_pipeline.pipeline
 pytest -q
