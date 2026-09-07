@@ -14,6 +14,7 @@ count data quality and the star-schema build as one step each.
 from __future__ import annotations
 
 import json
+import os
 import logging
 import shutil
 import sqlite3
@@ -73,7 +74,14 @@ log = logging.getLogger("pipeline")
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """Config with paths resolved, and licensed headcount derived from the roster
     so a total can never drift out of step with the per-team numbers."""
-    cfg_path = Path(path) if path else ROOT / "config.yaml"
+    # RETAIL_CONFIG lets a caller point the whole pipeline at another project
+    # directory. The DAG calls load_config() with no argument in every task, so
+    # without this there is no way to run it against a fixture -- which is why
+    # the DAG had only ever been imported, never executed.
+    if path is not None:
+        cfg_path = Path(path)
+    else:
+        cfg_path = Path(os.environ.get("RETAIL_CONFIG") or ROOT / "config.yaml")
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     root = cfg_path.resolve().parent
     cfg["paths"] = {k: (root / v).resolve() for k, v in cfg["paths"].items()}
