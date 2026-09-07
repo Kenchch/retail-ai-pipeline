@@ -1,4 +1,4 @@
 # CI gates are exact pins so an upstream tool release cannot change the result
 # of an unrelated push. pip-audit still downloads the current advisory data.
-ruff==0.16.5
+ruff==0.16.6
 pip-audit==2.10.1

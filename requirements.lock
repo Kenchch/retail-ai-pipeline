@@ -89,7 +89,7 @@ requests==2.34.2
     #   pip-audit
 rich==15.0.0
     # via pip-audit
-ruff==0.16.5
+ruff==0.16.6
     # via retail-ai-pipeline (pyproject.toml)
 scikit-learn==1.9.0
     # via retail-ai-pipeline (pyproject.toml)
