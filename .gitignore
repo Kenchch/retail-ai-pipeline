@@ -32,3 +32,7 @@ reports/*
 reports/runs/
 reports/failed_runs/
 reports/CURRENT
+
+# Metadata written by `pip install -e .`, and virtualenvs built from the lock.
+*.egg-info/
+.venv*/

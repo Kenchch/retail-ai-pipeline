@@ -55,7 +55,7 @@ be regenerated with `python scripts/check_revenue_bridge.py`.
 ## Run it
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m pip install -r requirements.lock && python -m pip install -e . --no-deps
 python scripts/get_data.py
 python -m retail_pipeline.pipeline
 pytest -q
