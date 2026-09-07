@@ -54,7 +54,10 @@ def serialize_dag():
     from airflow.models.dag import DagModel
     from airflow.models.dagbundle import DagBundleModel
     from airflow.models.serialized_dag import SerializedDagModel
-    from airflow.serialization.serialized_objects import DagSerialization, LazyDeserializedDAG
+    from airflow.serialization.serialized_objects import (
+        DagSerialization,
+        LazyDeserializedDAG,
+    )
     from airflow.utils.session import create_session
 
     def _serialize(dag, bundle_name: str = "dags-folder"):
@@ -71,7 +74,51 @@ def serialize_dag():
                 )
                 session.commit()
         SerializedDagModel.write_dag(
-            LazyDeserializedDAG(data=DagSerialization.to_dict(dag)), bundle_name=bundle_name
+            LazyDeserializedDAG(data=DagSerialization.to_dict(dag)),
+            bundle_name=bundle_name,
         )
 
     return _serialize
+
+
+@pytest.fixture()
+def task_states():
+    """Final state of every task in a dag_id, read back from the metadata database.
+
+    `dag.test()` records task outcomes but does not raise when one fails, so a
+    test that only looks at files on disk can pass while half the DAG errored.
+    Asserting on the states is what makes a green test mean the run was green.
+    """
+    pytest.importorskip("airflow")
+    from airflow.models.dagrun import DagRun
+    from airflow.models.taskinstance import TaskInstance
+    from airflow.utils.session import create_session
+
+    def _states(dag_id: str) -> dict[str, str | None]:
+        # Only the newest run: the session-scoped database is shared, so every
+        # test that runs this DAG leaves its task instances behind and an
+        # unfiltered query would mix a later run with an earlier one.
+        with create_session() as session:
+            latest = (
+                session.query(DagRun)
+                .filter(DagRun.dag_id == dag_id)
+                .order_by(DagRun.start_date.desc())
+                .first()
+            )
+            if latest is None:
+                return {}
+            rows = (
+                session.query(TaskInstance)
+                .filter(
+                    TaskInstance.dag_id == dag_id,
+                    TaskInstance.run_id == latest.run_id,
+                )
+                .all()
+            )
+            return {
+                # state comes back as a plain string, not the TaskInstanceState enum
+                row.task_id: (str(row.state) if row.state else None)
+                for row in rows
+            }
+
+    return _states

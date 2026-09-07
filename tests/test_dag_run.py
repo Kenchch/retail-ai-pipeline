@@ -59,12 +59,45 @@ def _write_transactions(path: Path, baskets: int = 60) -> int:
         customer = 17000 + (i % 12)
         when = (start + timedelta(days=i % 28, minutes=i)).strftime("%m/%d/%Y %H:%M")
         for code, desc, price in PRODUCTS[: 2 + (i % 3)]:
-            rows.append([invoice, code, desc, 1 + (i % 6), when, price, customer, "United Kingdom"])
+            rows.append(
+                [
+                    invoice,
+                    code,
+                    desc,
+                    1 + (i % 6),
+                    when,
+                    price,
+                    customer,
+                    "United Kingdom",
+                ]
+            )
 
     # One cancellation, and one line with a non-positive quantity: the gate has
     # to quarantine both rather than load them.
-    rows.append(["C560001", "85123A", PRODUCTS[0][1], -3, "01/20/2011 10:00", 2.55, 17001, "United Kingdom"])
-    rows.append(["560002", "71053", PRODUCTS[1][1], 0, "01/20/2011 10:05", 3.39, 17002, "United Kingdom"])
+    rows.append(
+        [
+            "C560001",
+            "85123A",
+            PRODUCTS[0][1],
+            -3,
+            "01/20/2011 10:00",
+            2.55,
+            17001,
+            "United Kingdom",
+        ]
+    )
+    rows.append(
+        [
+            "560002",
+            "71053",
+            PRODUCTS[1][1],
+            0,
+            "01/20/2011 10:05",
+            3.39,
+            17002,
+            "United Kingdom",
+        ]
+    )
 
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
@@ -83,9 +116,13 @@ def _write_usage_events(path: Path, roster: dict[str, int]) -> None:
         for seat in range(min(seats, 6)):
             user = f"{team[:3].lower()}{seat:02d}"
             when = start + timedelta(days=team_index * 3 + seat)
-            rows.append([when.strftime("%Y-%m-%d %H:%M:%S"), user, team, "open_report", ""])
+            rows.append(
+                [when.strftime("%Y-%m-%d %H:%M:%S"), user, team, "open_report", ""]
+            )
             if seat % 2 == 0:
-                rows.append([when.strftime("%Y-%m-%d %H:%M:%S"), user, team, "feedback", 4])
+                rows.append(
+                    [when.strftime("%Y-%m-%d %H:%M:%S"), user, team, "feedback", 4]
+                )
 
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
@@ -112,7 +149,9 @@ def project(tmp_path):
     config_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 
     rows = _write_transactions(tmp_path / "data" / "raw" / "online_retail.csv")
-    _write_usage_events(tmp_path / "data" / "raw" / "usage_events.csv", cfg["adoption"]["roster"])
+    _write_usage_events(
+        tmp_path / "data" / "raw" / "usage_events.csv", cfg["adoption"]["roster"]
+    )
 
     # dbt reads the published pointer through its own project; the DAG's dbt task
     # is stubbed below, so only the directory needs to exist.
@@ -120,7 +159,9 @@ def project(tmp_path):
     return tmp_path, config_path, rows
 
 
-def test_the_dag_runs_and_publishes(project, monkeypatch, airflow_metadata_db, serialize_dag):
+def test_the_dag_runs_and_publishes(
+    project, monkeypatch, airflow_metadata_db, serialize_dag, task_states
+):
     tmp_path, config_path, source_rows = project
     monkeypatch.setenv("RETAIL_CONFIG", str(config_path))
     monkeypatch.setenv("AIRFLOW__CORE__DAGS_FOLDER", str(ROOT / "dags"))
@@ -154,24 +195,34 @@ def test_the_dag_runs_and_publishes(project, monkeypatch, airflow_metadata_db, s
 
     metrics = json.loads((reports / "run_metrics.json").read_text(encoding="utf-8"))
     assert metrics["rows_source"] == source_rows
-    assert metrics["rows_loaded"] + metrics["rows_quarantined"] == metrics["rows_source"], (
-        "the run's own metrics do not account for every source row"
+    assert (
+        metrics["rows_loaded"] + metrics["rows_quarantined"] == metrics["rows_source"]
+    ), "the run's own metrics do not account for every source row"
+    assert metrics["rows_quarantined"] >= 2, (
+        "the cancelled and zero-quantity rows should be held back"
     )
-    assert metrics["rows_quarantined"] >= 2, "the cancelled and zero-quantity rows should be held back"
     assert metrics["recommendations"] > 0, "no co-purchase pairs were produced"
 
-    # dbt is not stubbed: the task builds the mart and runs its 47 data tests
-    # against this run, and raises if any fail, so a DAG that completes is a
-    # DAG whose published output satisfied the contract.
-    built = list(tmp_path.rglob("retail_*.duckdb"))
-    assert built, "dbt_build produced no warehouse"
+    # Every task has to have succeeded, dbt_build included. It is not stubbed:
+    # it builds the mart and runs its own data tests against the run this DAG
+    # just published, and raises if any fail. `watcher` is the exception -- it
+    # is trigger_rule="one_failed", so a clean run skips it, and a run where it
+    # succeeded would mean something upstream broke.
+    states = task_states("retail_ai_pipeline")
+    assert states.get("watcher") in (None, "skipped", "upstream_failed"), (
+        f"the watcher fired, so a task failed: {states}"
+    )
+    failed = {t: s for t, s in states.items() if t != "watcher" and s != "success"}
+    assert not failed, f"tasks did not succeed: {failed}"
 
     # clear_staging is all_success, so a clean run leaves nothing behind for it.
     staging = tmp_path / "data" / "staging" / run_id
     assert not staging.exists(), "this run's staging hand-off was not cleared"
 
 
-def test_a_failing_gate_publishes_nothing(project, monkeypatch, airflow_metadata_db, serialize_dag):
+def test_a_failing_gate_publishes_nothing(
+    project, monkeypatch, airflow_metadata_db, serialize_dag, task_states
+):
     """The gate is the DAG's one hard stop. If it fails, `publish` must not run
     and `published/CURRENT.json` must not appear -- the guarantee the whole
     staging design exists to provide."""
@@ -196,6 +247,14 @@ def test_a_failing_gate_publishes_nothing(project, monkeypatch, airflow_metadata
         task.retry_delay = timedelta(seconds=0)
     serialize_dag(dag_module.dag)
     dag_module.dag.test()
+
+    states = task_states("retail_ai_pipeline")
+    assert states.get("data_quality_gate") == "failed", (
+        f"the gate was supposed to fail: {states}"
+    )
+    assert states.get("publish") not in ("success",), (
+        f"publish ran after a failed gate: {states}"
+    )
 
     assert not (tmp_path / "published" / "CURRENT.json").exists(), (
         "a failed quality gate still published a pointer"
