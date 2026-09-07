@@ -1,0 +1,91 @@
+# Local development only; the UI is bound to localhost.
+# Adapted from the Apache Airflow 3.3.1 Compose architecture, using LocalExecutor.
+name: retail-local
+x-airflow: &airflow
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.airflow
+  image: retail-airflow:local
+  user: "50000:0"
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: retail-local-development-only
+    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  volumes:
+    - ./dags:/opt/retail/dags:ro
+    - ./retail_pipeline:/opt/retail/retail_pipeline:ro
+    - retail-data:/opt/retail/data
+    - retail-reports:/opt/retail/reports
+    - retail-published:/opt/retail/published
+    - retail-dbt:/opt/retail/dbt
+    - airflow-logs:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -U, airflow]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+  airflow-init:
+    <<: *airflow
+    entrypoint: /bin/bash
+    command:
+      - -ec
+      - |
+        airflow db migrate
+        cp -r /opt/retail/dbt-seed/. /opt/retail/dbt/
+        python scripts/get_data.py
+  airflow-apiserver:
+    <<: *airflow
+    command: api-server
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: [CMD, curl, --fail, http://localhost:8080/api/v2/monitor/health]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+  airflow-scheduler:
+    <<: *airflow
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-apiserver:
+        condition: service_healthy
+    restart: unless-stopped
+  airflow-dag-processor:
+    <<: *airflow
+    command: dag-processor
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+volumes:
+  postgres-data:
+  retail-data:
+  retail-reports:
+  retail-published:
+  retail-dbt:
+  airflow-logs:

@@ -29,6 +29,9 @@ jobs:
       # synthetic frames, rather than mocking the logic under test. It does not
       # need the 45 MB source extract - nothing here touches the network or
       # data/raw.
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
       - name: Install
         run: |
           python -m pip install --upgrade pip

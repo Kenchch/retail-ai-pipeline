@@ -1,0 +1,15 @@
+.git
+.venv*
+*.egg-info
+__pycache__
+.pytest_cache
+.ruff_cache
+data
+reports
+published
+workshop
+dbt/runs
+dbt/target
+dbt/logs
+dbt/CURRENT.json
+.env*
