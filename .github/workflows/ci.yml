@@ -90,6 +90,15 @@ jobs:
       - name: The DAG loads and is wired correctly
         run: pytest -q tests/test_dag.py
 
+      # Wiring is not behaviour. This executes every task through dag.test()
+      # against a fixture feed and checks what reached disk: a published
+      # pointer, a warehouse, metrics that account for every source row, and
+      # dbt building its mart and passing its own data tests on that run.
+      # A failing quality gate is exercised too, because "publish never runs
+      # after the gate fails" is the guarantee the staging design exists for.
+      - name: The DAG actually runs
+        run: pytest -q tests/test_dag_run.py
+
       - name: Audit the actual worker environment
         run: pip-audit --local --strict
 
@@ -98,7 +107,7 @@ jobs:
       # is what proves the install above actually took.
       - name: The DAG tests actually ran
         run: |
-          out=$(pytest -q tests/test_dag.py --collect-only 2>&1)
+          out=$(pytest -q tests/test_dag.py tests/test_dag_run.py --collect-only 2>&1)
           echo "$out" | tail -3
           echo "$out" | grep -q "skipped" \
             && { echo "the DAG tests skipped - Airflow did not import"; exit 1; }
