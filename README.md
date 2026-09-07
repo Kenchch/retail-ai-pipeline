@@ -61,6 +61,9 @@ be regenerated with `python scripts/check_revenue_bridge.py`.
 
 ## Run it
 
+For a locally validated Airflow 3 + Postgres stack, see
+[Docker Compose setup and successful-run screenshot](docs/LOCAL_AIRFLOW.md).
+
 ```bash
 python -m pip install -r requirements.lock && python -m pip install -e . --no-deps
 python scripts/get_data.py
