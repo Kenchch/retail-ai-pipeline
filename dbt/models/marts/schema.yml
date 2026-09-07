@@ -1,56 +1,193 @@
 version: 2
-
 models:
-  - name: mart_daily_sales
-    description: >-
-      One row per calendar day, including non-trading days, with sales and
-      guest-revenue measures for downstream reporting.
-    config:
-      contract:
-        enforced: true
-    columns:
-      - name: run_id
-        description: Published pipeline run from which this mart was built.
-        data_type: varchar
-        data_tests: [not_null]
-      - name: date_key
-        description: Calendar date at daily grain.
-        data_type: date
-        data_tests: [unique, not_null]
-      - name: year
-        description: Calendar year.
-        data_type: integer
-        data_tests: [not_null]
-      - name: month
-        description: Calendar month number.
-        data_type: integer
-        data_tests:
-          - not_null
-          - accepted_values:
-              arguments:
-                values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-                quote: false
-      - name: day_of_week
-        description: English weekday name.
-        data_type: varchar
-        data_tests: [not_null]
-      - name: is_weekend
-        description: Whether the date is Saturday or Sunday.
-        data_type: boolean
-        data_tests: [not_null]
-      - name: has_sales
-        description: Whether at least one accepted sales line exists on the date.
-        data_type: boolean
-        data_tests: [not_null]
-      - name: revenue
-        description: Accepted revenue in GBP; zero on non-trading days.
-        data_type: decimal(18, 4)
-        data_tests: [not_null]
-      - name: orders
-        description: Distinct accepted invoices; zero on non-trading days.
-        data_type: bigint
-        data_tests: [not_null]
-      - name: guest_revenue_share
-        description: Share of revenue from rows without a customer identifier.
-        data_type: double
-        data_tests: [not_null]
+- name: mart_daily_sales
+  description: One row per calendar day, including non-trading days, with sales and
+    guest-revenue measures for downstream reporting.
+  config:
+    contract:
+      enforced: true
+  columns:
+  - name: run_id
+    description: Published pipeline run from which this mart was built.
+    data_type: varchar
+    data_tests:
+    - not_null
+  - name: date_key
+    description: Calendar date at daily grain.
+    data_type: date
+    data_tests:
+    - unique
+    - not_null
+  - name: year
+    description: Calendar year.
+    data_type: integer
+    data_tests:
+    - not_null
+  - name: month
+    description: Calendar month number.
+    data_type: integer
+    data_tests:
+    - not_null
+    - accepted_values:
+        arguments:
+          values:
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+          - 8
+          - 9
+          - 10
+          - 11
+          - 12
+          quote: false
+  - name: day_of_week
+    description: English weekday name.
+    data_type: varchar
+    data_tests:
+    - not_null
+  - name: is_weekend
+    description: Whether the date is Saturday or Sunday.
+    data_type: boolean
+    data_tests:
+    - not_null
+  - name: has_sales
+    description: Whether at least one accepted sales line exists on the date.
+    data_type: boolean
+    data_tests:
+    - not_null
+  - name: revenue
+    description: Accepted revenue in GBP; zero on non-trading days.
+    data_type: decimal(18, 4)
+    data_tests:
+    - not_null
+  - name: orders
+    description: Distinct accepted invoices; zero on non-trading days.
+    data_type: bigint
+    data_tests:
+    - not_null
+  - name: guest_revenue_share
+    description: Share of revenue from rows without a customer identifier.
+    data_type: double
+    data_tests:
+    - not_null
+  - name: matched_credit_revenue
+    data_type: decimal(18, 4)
+    data_tests:
+    - not_null
+    description: Matched full-line cancellation value.
+  - name: net_revenue
+    data_type: decimal(18, 4)
+    data_tests:
+    - not_null
+    description: Gross less matched full-line credits, on the original sale date.
+- name: mart_customer_sales
+  description: One known customer across the full extract. Guests excluded.
+  config:
+    contract:
+      enforced: true
+  columns:
+  - name: run_id
+    data_type: varchar
+    data_tests:
+    - not_null
+  - name: customer_id
+    data_type: bigint
+    data_tests:
+    - not_null
+    - unique
+  - name: orders
+    data_type: bigint
+    data_tests:
+    - not_null
+  - name: revenue
+    data_type: decimal(18, 4)
+    data_tests:
+    - not_null
+  - name: matched_credit_revenue
+    data_type: decimal(18, 4)
+    data_tests:
+    - not_null
+  - name: net_revenue
+    data_type: decimal(18, 4)
+    data_tests:
+    - not_null
+  - name: first_sale_date
+    data_type: date
+    data_tests:
+    - not_null
+  - name: last_sale_date
+    data_type: date
+    data_tests:
+    - not_null
+- name: mart_product_sales
+  description: One product across the full extract, including guest sales.
+  config:
+    contract:
+      enforced: true
+  columns:
+  - name: run_id
+    data_type: varchar
+    data_tests:
+    - not_null
+  - name: stock_code
+    data_type: varchar
+    data_tests:
+    - not_null
+    - unique
+  - name: orders
+    data_type: bigint
+    data_tests:
+    - not_null
+  - name: units
+    data_type: bigint
+    data_tests:
+    - not_null
+  - name: revenue
+    data_type: decimal(18, 4)
+    data_tests:
+    - not_null
+  - name: matched_credit_revenue
+    data_type: decimal(18, 4)
+    data_tests:
+    - not_null
+  - name: net_revenue
+    data_type: decimal(18, 4)
+    data_tests:
+    - not_null
+- name: mart_recommendations
+  description: One source product and rank. Gross-basket model; method scores are
+    not interchangeable.
+  config:
+    contract:
+      enforced: true
+  columns:
+  - name: run_id
+    data_type: varchar
+    data_tests:
+    - not_null
+  - name: stock_code
+    data_type: varchar
+    data_tests:
+    - not_null
+  - name: recommended_stock_code
+    data_type: varchar
+    data_tests:
+    - not_null
+  - name: rank
+    data_type: integer
+    data_tests:
+    - not_null
+  - name: method
+    data_type: varchar
+    data_tests:
+    - not_null
+  - name: support
+    data_type: double
+  - name: confidence
+    data_type: double
+  - name: lift
+    data_type: double

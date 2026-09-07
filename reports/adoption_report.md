@@ -1,6 +1,6 @@
 # Adoption report
 
-`run_id: local_20260822T080332281166`
+`run_id: local_20260907T075857190776`
 
 62 licensed users across 5 teams &middot; four weeks ending 28 Jun 2026.
 

@@ -31,6 +31,8 @@ def test_temporal_evaluation_does_not_learn_test_only_products():
                     unit_price=1.0,
                     customer_id="customer",
                     country="UK",
+                    reversed_by_credit=False,
+                    matched_credit_invoice=None,
                 )
             )
     cfg = load_config()

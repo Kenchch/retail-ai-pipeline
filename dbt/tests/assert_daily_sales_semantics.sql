@@ -8,6 +8,7 @@ with expected as (
         count(f.invoice_no) > 0 as has_sales,
         coalesce(sum(f.revenue), 0) as revenue,
         count(distinct f.invoice_no) as orders,
+        coalesce(sum(case when f.reversed_by_credit then f.revenue else 0 end), 0) as matched_credit_revenue,
         coalesce(
             sum(case when f.customer_id is null then f.revenue else 0 end)
                 / nullif(sum(f.revenue), 0),
@@ -30,6 +31,8 @@ where m.date_key is null
    or m.is_weekend <> e.is_weekend
    or m.has_sales <> e.has_sales
    or m.revenue <> cast(e.revenue as decimal(18, 4))
+   or m.matched_credit_revenue <> cast(e.matched_credit_revenue as decimal(18, 4))
+   or m.net_revenue <> m.revenue - m.matched_credit_revenue
    or m.orders <> e.orders
    or abs(m.guest_revenue_share - e.guest_revenue_share) > 0.000000001
    or m.guest_revenue_share not between 0 and 1

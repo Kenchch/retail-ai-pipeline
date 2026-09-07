@@ -12,7 +12,7 @@ and all usage telemetry is simulated.
 - Row-level quality rules and quarantine with source-row reconciliation.
 - Per-run staging and atomic publication through `published/CURRENT.json`.
 - Basket associations with description-based recommendation fallback.
-- A contracted dbt/DuckDB daily sales mart and a Power BI model.
+- Contracted dbt/DuckDB daily, customer, product and recommendation marts, plus Power BI.
 - An Airflow DAG, failure recovery tests and reproducible simulated adoption reports.
 
 ## Results and evidence
@@ -22,6 +22,7 @@ and all usage telemetry is simulated.
 | Input invoice lines | 541,909 |
 | Loaded / quarantined | 522,566 / 19,343 (3.57%) |
 | Gross accepted positive sales | £10,247,353.28 |
+| Exact matched cancellations / net of those matches | £388,322.16 / £9,859,031.12 |
 | Accepted invoices | 19,773 |
 | Products / recommendation rows | 3,803 / 17,083 |
 
@@ -31,6 +32,12 @@ Evidence: [run metrics](reports/run_metrics.json), [quality report](reports/data
 The [R companion analysis](https://github.com/Kenchch/online-retail-analysis-r)
 reports £9,883,659.86 after matching cancellations. It retains duplicates and
 uses a different acceptance policy; its figure is not this pipeline's revenue.
+The Python fact now flags 2,729 accepted lines matched to source credit notes
+(29.38% of all 9,288 credit-note lines). Gross revenue remains unchanged;
+**net of these exact matches is £9,859,031.12**. This uses full-extract hindsight
+and attributes the adjustment to the original sale date, not the credit date.
+Unmatched and partial credits are excluded. [Recomputed evidence](reports/cancellations.json)
+is checked against the published fact by `python scripts/check_cancellations.py`.
 The detailed revenue bridge is in [design notes](docs/DESIGN.md#reconciliation-with-online-retail-analysis-r).
 
 ## Temporal recommendation evaluation
@@ -63,6 +70,7 @@ pytest -q
 # dbt consumer; install on every Airflow worker too
 python -m pip install -r requirements-dbt.txt
 python scripts/run_dbt.py
+python scripts/check_cancellations.py
 ```
 
 Airflow additionally requires `requirements-airflow.txt` and its versioned release
@@ -72,7 +80,7 @@ constraints. See [runtime and orchestration details](docs/DESIGN.md#how-it-works
 
 - Publication uses a single machine and local storage.
 - Warehouse and downstream dbt promotion are separate transaction boundaries.
-- Revenue is gross accepted positive sales; cancellation netting is in the R project.
+- Gross and exact-match-net revenue are separate; neither estimates unmatched refunds.
 - Offline associations do not establish recommendation impact or causal uplift.
 - Adoption metrics use generated telemetry, not real users.
 - Power BI setup and the workshop describe a portfolio scenario.

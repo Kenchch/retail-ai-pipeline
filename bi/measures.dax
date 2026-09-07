@@ -27,6 +27,16 @@
 Revenue =
 SUM ( fact_sales[Revenue] )
 
+
+// Exact full-line credits matched to accepted sales, attributed to sale date.
+// Partial/unmatched credits are excluded; this is not accounting net revenue.
+Revenue Net of Matched Cancellations =
+CALCULATE ( [Revenue], fact_sales[ReversedByCredit] = FALSE () )
+
+
+Matched Cancellation Revenue =
+CALCULATE ( [Revenue], fact_sales[ReversedByCredit] = TRUE () )
+
 // Format: #,##0
 Units Sold =
 SUM ( fact_sales[Quantity] )

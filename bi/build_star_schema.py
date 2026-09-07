@@ -409,6 +409,7 @@ def build_fact_sales(
             "Quantity": f["quantity"].astype("Int64"),
             "UnitPrice": f["unit_price"].round(4),
             "Revenue": f["revenue"].round(4),
+            "ReversedByCredit": f["reversed_by_credit"].astype(bool),
         }
     )
     if not (out[["ProductKey", "CustomerKey", "CountryKey"]] != 0).all().all():
