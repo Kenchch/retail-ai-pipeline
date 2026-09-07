@@ -1,0 +1,13 @@
+{
+  "run_id": "local_20260907T075857190776",
+  "source_sha256": "a2f79bbdd4463df6db8a3f5a50b9c980ae8f645a370bf5e2c0d6097f9e817b05",
+  "source_rows": 541909,
+  "accepted_sales_rows": 522566,
+  "credit_note_rows": 9288,
+  "matched_accepted_sales_rows": 2729,
+  "matched_share_of_all_credit_rows_pct": 29.38,
+  "gross_gbp": 10247353.28,
+  "matched_credit_gbp": 388322.16,
+  "net_of_matched_cancellations_gbp": 9859031.12,
+  "policy": "Exact chronological one-to-one matches against quality-accepted sales; sale-date attribution; full-extract hindsight; unmatched/partial credits excluded."
+}

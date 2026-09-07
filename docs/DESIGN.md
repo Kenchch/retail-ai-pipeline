@@ -318,3 +318,45 @@ The positive-sale bridge was independently recomputed by
 5,223 duplicate lines contribute £24,765.59 and three PADS lines contribute £0.003.
 Totals in the table are rounded to pence. This bridge reconciles revenue only;
 invoice counts use different cancellation policies.
+
+## Credit-aware facts and dbt layers
+
+`check_quality()` retains the existing accepted/quarantined row policy, then
+matches every eligible source credit against accepted sales. Customer, stock
+code, absolute quantity and unit price must agree exactly; sale timestamp must
+be no later than credit timestamp. Credits consume the latest unused sale in
+chronological credit order. Source order breaks credit ties; reverse source
+order breaks sale ties. Missing customers/timestamps and partial returns do not
+match. Each source credit line and accepted sale line is consumed at most once.
+The fact retains `reversed_by_credit` and nullable `matched_credit_invoice`;
+no accepted sales rows are deleted. Rebuild old publications before using the
+new dbt models or BI exporter, which require the new schema.
+
+Full-source recomputation matches 2,729 accepted sales (29.38% of all 9,288
+C-prefixed lines): £10,247,353.28 gross minus £388,322.16 matched value equals
+£9,859,031.12. R's £9,883,659.86 differs by £24,628.74: R retains duplicate
+sales and matches before its own product filtering, while Python matches
+against its quality-accepted sales. The existing gross-policy bridge above
+and this net figure describe different stages; subtracting R's matched count
+from Python's row count is invalid. [Evidence](../reports/cancellations.json)
+records the source SHA and is checked against every value in the published fact.
+
+These flags use the entire supplied extract, including later credits. They are
+retrospective sale-date adjustments, not a point-in-time accounting ledger.
+The recommender still uses gross accepted baskets and does not read the flags,
+so future credit information is not introduced into its ranking features.
+
+| Layer/model | Grain and definition |
+|---|---|
+| `stg_sales` | Accepted invoice line; explicit decimal money and boolean cancellation type |
+| `int_sales_measures` | Same line; gross = matched credit value + exact-match net |
+| `mart_daily_sales` | Every calendar date, including zero-sales dates; existing gross/orders retained |
+| `mart_customer_sales` | One known customer over the extract; guests excluded, first/last gross sale dates |
+| `mart_product_sales` | One stock code, including guest sales; gross units and distinct gross orders |
+| `stg_recommendations` / `mart_recommendations` | One source stock code and rank; same model output, with run provenance |
+
+Recommendation scores remain method-specific; text similarity is not basket
+confidence or evidence of sales uplift. All four marts have enforced contracts.
+Data tests reconcile daily/product gross and cancellation totals, per-customer
+net totals, flags, recommendation grain and the existing source/run checks.
+Orders/units remain gross; no new claim about net order counts is implied.

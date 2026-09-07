@@ -2,10 +2,12 @@ with daily as (
     select
         date_key,
         sum(revenue) as revenue,
+        sum(matched_credit_revenue) as matched_credit_revenue,
+        sum(net_revenue) as net_revenue,
         count(distinct invoice_no) as orders,
         sum(case when customer_id is null then revenue else 0 end)
             / nullif(sum(revenue), 0) as guest_revenue_share
-    from {{ source('warehouse', 'fact_sales') }}
+    from {{ ref('int_sales_measures') }}
     group by date_key
 )
 
@@ -18,6 +20,8 @@ select
     cast(d.is_weekend as boolean) as is_weekend,
     cast(d.has_sales as boolean) as has_sales,
     cast(coalesce(s.revenue, 0) as decimal(18, 4)) as revenue,
+    cast(coalesce(s.matched_credit_revenue, 0) as decimal(18, 4)) as matched_credit_revenue,
+    cast(coalesce(s.net_revenue, 0) as decimal(18, 4)) as net_revenue,
     cast(coalesce(s.orders, 0) as bigint) as orders,
     cast(coalesce(s.guest_revenue_share, 0) as double) as guest_revenue_share
 from {{ source('warehouse', 'dim_date') }} as d

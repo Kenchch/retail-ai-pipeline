@@ -133,6 +133,7 @@ matter. Fix these explicitly, in Power Query, before applying:
 | `fact_sales` | `Date` | Date |
 | `fact_sales` | `ProductKey`, `CustomerKey`, `CountryKey`, `Quantity` | Whole number |
 | `fact_sales` | `UnitPrice`, `Revenue` | Decimal number |
+| `fact_sales` | `ReversedByCredit` | True/False |
 | `fact_quarantine` | `QuarantineKey`, `ProductKey`, `CountryKey`, `Quantity` | Whole number |
 | `fact_quarantine` | `Date` | Date |
 | `fact_quarantine` | `UnitPrice`, `RejectedValue` | Decimal number |

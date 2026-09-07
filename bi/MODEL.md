@@ -234,3 +234,18 @@ refreshed with the model.
 - **The recommendations and adoption tables are out of scope.** Adoption events
   are stamped 2026 and would need their own date dimension, breaking the single
   conformed calendar for no analytical gain. They belong in a second model.
+
+## Exact matched cancellation measures
+
+Rebuild the pipeline and model CSVs before refreshing Power BI. Load the new
+`fact_sales[ReversedByCredit]` column as True/False, then add the two measures in
+`measures.dax`. `Revenue` remains gross; `Revenue Net of Matched Cancellations`
+filters out flagged lines and `Matched Cancellation Revenue` selects them.
+Unfiltered validation: £9,859,031.12 net + £388,322.16 matched = £10,247,353.28
+gross. Existing report screenshots show gross measures; these new DAX measures
+have not been executed in Power BI Desktop. The generated CSV values and dbt
+counterparts were validated locally.
+
+This is sale-date attribution with full-extract hindsight and exact full-line
+matches only. It does not net partial/unmatched refunds or change customer
+segments, product aggregates or recommendation training to a net basis.

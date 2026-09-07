@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from retail_pipeline.credits import flag_reversed_sales
 from retail_pipeline.publish import MANIFEST_FILE as MANIFEST_FILE
 from retail_pipeline.publish import PUBLISHED_MARKER as PUBLISHED_MARKER
 from retail_pipeline.publish import REPORT_NAMES as REPORT_NAMES
@@ -296,7 +297,7 @@ def check_quality(
     quarantine["reasons"] = [
         ",".join(names[row]) for row in flags.loc[failed, blocking].to_numpy(dtype=bool)
     ]
-    clean = df[~failed].copy()
+    clean = flag_reversed_sales(df[~failed], df)
 
     rate = float(failed.mean()) if len(df) else 0.0
     log.info(
@@ -410,6 +411,8 @@ def transform(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     reads only invoice + product; both read the same conformed dimensions.
     """
     d = df.copy()
+    if "reversed_by_credit" not in d:
+        raise ValueError("Run check_quality before transform to match source credits")
     d["date_key"] = pd.to_datetime(d["invoice_ts"].dt.date)
     d["revenue"] = (d["quantity"] * d["unit_price"]).round(4)
 
@@ -423,6 +426,8 @@ def transform(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
             "quantity",
             "unit_price",
             "revenue",
+            "reversed_by_credit",
+            "matched_credit_invoice",
             "country",
         ]
     ].reset_index(drop=True)

@@ -50,8 +50,23 @@ sources:
           - name: revenue
             description: Quantity multiplied by unit price in GBP.
             data_tests: [not_null]
+          - name: reversed_by_credit
+            description: Exact full-line credit matched to this accepted sale, using the full extract.
+            data_tests: [not_null]
+          - name: matched_credit_invoice
+            description: Matched source credit invoice, null for unflagged sales.
           - name: country
             description: Invoice country supplied by the source.
+            data_tests: [not_null]
+
+      - name: recommendations
+        description: Ranked recommendations from gross accepted baskets; scores are method-specific.
+        columns:
+          - name: stock_code
+            data_tests: [not_null]
+          - name: recommended_stock_code
+            data_tests: [not_null]
+          - name: rank
             data_tests: [not_null]
 
       - name: dim_product

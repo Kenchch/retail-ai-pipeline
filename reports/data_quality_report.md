@@ -1,6 +1,6 @@
 # Data quality report
 
-`run_id: local_20260822T080332281166`
+`run_id: local_20260907T075857190776`
 
 - Rows read: **541,909**
 - Quarantined (failed a blocking rule): **19,343** (3.57%)
