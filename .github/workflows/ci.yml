@@ -146,6 +146,27 @@ jobs:
       - name: Build and test the dbt consumer
         run: python scripts/run_dbt.py
 
+      # The job already downloads the pinned extract and runs the pipeline over
+      # it, so the committed reports can be checked rather than trusted. They
+      # are the bottom of the evidence chain: every figure in README.md and
+      # docs/DESIGN.md is asserted against one of these files, and a report
+      # nobody can reproduce makes those assertions circular.
+      #
+      # These three write reports the pipeline does not, so without running
+      # them the guard would pass trivially on their files. About 75 s
+      # together, against this job's 30-minute budget.
+      - name: Regenerate the reports the pipeline does not write
+        run: |
+          python -m retail_pipeline.evaluate
+          python scripts/check_cancellations.py
+          python scripts/check_revenue_bridge.py
+
+      # Runs on both matrix legs deliberately. The committed reports were
+      # produced on Windows and verified to regenerate byte-identically under
+      # Linux, so this holds that property rather than assuming it.
+      - name: The committed reports must be what this data produces
+        run: python scripts/check_committed_reports.py
+
       # This module needs duckdb, which is intentionally absent from the core
       # test matrix. Run it here, where the dbt runtime is installed.
       - name: Test the dbt wrapper

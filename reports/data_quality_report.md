@@ -13,7 +13,7 @@
 | `cancelled_invoice` | validity | yes | 9,288 | 1.71% | 'C'-prefixed invoices are cancellations, not sales |
 | `non_positive_quantity` | validity | yes | 10,624 | 1.96% | Returns and stock adjustments |
 | `non_positive_price` | validity | yes | 2,521 | 0.47% | Zero-price giveaways and manual corrections |
-| `price_outlier` | validity | yes | 120 | 0.02% | Above the configured cap - almost always an adjustment line |
+| `price_outlier` | validity | yes | 120 | 0.02% | Above the configured cap - on this extract, always an adjustment line another rule also rejects; see max_unit_price in config.yaml |
 | `non_product_stock_code` | consistency | yes | 2,916 | 0.54% | POST, BANK CHARGES, M - real rows, but not sellable products |
 | `missing_description` | completeness | no | 1,454 | 0.27% | Degrades the recommender, not the sales facts |
 | `missing_customer_id` | completeness | no | 135,080 | 24.93% | Guest checkout - fine for basket analysis, not for customer analytics |
