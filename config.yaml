@@ -9,6 +9,7 @@ paths:
   staging: data/staging          # DAG hand-off only - never published
   warehouse: data/warehouse/retail.db   # legacy path; see published/CURRENT.json
   reports: reports
+  dbt: dbt                       # the dbt project: its marts and CURRENT.json
 
 extract:
   column_map:

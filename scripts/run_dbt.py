@@ -119,7 +119,12 @@ def main(expected_run_id: str | None = None) -> int:
         Path(cfg["paths"]["raw"]).name
     )
 
-    dbt_dir = ROOT / "dbt"
+    # From the config, not from ROOT. The dbt task writes a mart database, a
+    # CURRENT.json pointer and dbt's own target/ and logs/ into this directory,
+    # so a run pointed at a fixture project by RETAIL_CONFIG was still writing
+    # all of it into the repository -- 84 files, and a mart pointer swapped to
+    # a fixture's data underneath whatever was reading the real one.
+    dbt_dir = Path(cfg["paths"].get("dbt", ROOT / "dbt"))
     mart_root = dbt_dir / "runs"
     mart_root.mkdir(parents=True, exist_ok=True)
     # DuckDB derives the catalog name from the filename. Keep the stem a valid
