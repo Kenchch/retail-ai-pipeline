@@ -5,6 +5,11 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
+# Deliberately the same tuple as the `duplicate_line_items` quality rule in
+# pipeline.py. If the two ever disagree, the pipeline is quarantining one
+# definition of a duplicate line and matching against another.
+DUPLICATE_KEY = ["invoice_no", "stock_code", "quantity", "unit_price", "invoice_ts"]
+
 
 def flag_reversed_sales(sales: pd.DataFrame, source: pd.DataFrame) -> pd.DataFrame:
     """Keep gross sales; flag each latest eligible sale consumed by a credit.
@@ -33,6 +38,17 @@ def flag_reversed_sales(sales: pd.DataFrame, source: pd.DataFrame) -> pd.DataFra
         & source["quantity"].lt(0),
         cols,
     ].copy()
+    # The same key the quality rules use to quarantine duplicate sales, applied
+    # to the credit side, which was reading the raw source and so kept them.
+    # The rule's reasoning does not change with the sign: "same invoice, product,
+    # quantity, price and timestamp twice" is one line recorded twice, and a
+    # second copy of a credit consumes a second real sale.
+    #
+    # On the extract this repository publishes, that is 37 credit lines worth
+    # GBP 2,832.76, and their effect on the published figures is that 4 sales
+    # worth GBP 2,363.28 gross were flagged as reversed by a credit note that
+    # exists once.
+    credits = credits.drop_duplicates(subset=DUPLICATE_KEY, keep="first")
     credits["quantity"] = -credits["quantity"]
     credits["kind"] = 1
     credits["position"] = np.arange(len(credits))
