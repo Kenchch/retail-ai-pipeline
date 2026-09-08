@@ -62,11 +62,17 @@ COLUMNS = [
     "lift",
 ]
 
-# How many nearest neighbours the content fallback asks for before sorting and
-# truncating to top_n. Chosen by measurement, not by feel: under three
-# permutations of the real catalogue, top_n + 1 leaves 6.2% of cold-start
-# products with different published recommendations, 20 leaves 1.4%, 50 leaves
-# 0.45%, and 125 leaves the same 0.45%. See content_fallback.
+# The width the content fallback *starts* at. It is not the answer on its own:
+# _tie_complete_neighbours widens it for any product whose cut-off is still
+# ambiguous, so correctness does not depend on this number. It only decides how
+# often a second query is needed.
+#
+# Chosen by measurement. Under three permutations of the real catalogue, and
+# with the widening removed so the width had to carry it alone, top_n + 1 left
+# 6.2% of cold-start products with different published recommendations, 20 left
+# 1.4%, 50 left 0.45%, and 125 left the same 0.45% -- which is what showed that
+# no fixed width finishes the job. With the widening, 50 resolves all but a
+# handful in one pass.
 CANDIDATE_WIDTH = 50
 
 
@@ -170,6 +176,66 @@ def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return top
 
 
+def _tie_complete_neighbours(nn, matrix, rows, codes, sources, top_n):
+    """Shortlists whose membership does not depend on floating-point noise.
+
+    `kneighbors` returns k candidates. When the k-th and (k+1)-th distances are
+    equal, *which* of the tied products lands inside that window is decided by
+    the order sklearn's internals produce -- which depends on the BLAS kernels
+    the machine happens to use. Sorting the returned window by
+    (distance, stock_code) fixes the order within it and cannot fix its
+    membership: the excluded twin never arrives to be sorted.
+
+    That is not hypothetical. CI caught it: the same code, the same pinned
+    versions and the same input produced 7 more hits on a GitHub runner than on
+    the machine the reports were generated on, because a handful of products
+    have equidistant groups wider than the fetch.
+
+    So the window is widened until the cut is unambiguous -- until the last
+    candidate fetched is strictly farther than the top_n-th -- and only then
+    truncated. Every tied product is then present and the tiebreak on
+    stock_code decides among the whole group, identically everywhere.
+    """
+    width = min(CANDIDATE_WIDTH, matrix.shape[0])
+    pending = list(range(len(rows)))
+    shortlists: list[list[tuple[float, str]]] = [[] for _ in rows]
+
+    while pending:
+        distances, idx = nn.kneighbors(matrix[rows[pending]], n_neighbors=width)
+        still_ambiguous = []
+        for slot, row_distances, row_idx in zip(pending, distances, idx, strict=True):
+            # Rounded because two mathematically equal cosine distances can
+            # differ in the last bits, which would make the tiebreaker depend
+            # on floating-point noise instead of resolving it.
+            candidates = sorted(
+                (round(float(d), 12), str(codes[j]))
+                for d, j in zip(row_distances, row_idx, strict=True)
+                if codes[j] != sources[slot]
+            )
+            shortlists[slot] = candidates[:top_n]
+            if width >= matrix.shape[0]:
+                # The whole catalogue is in view, so nothing can be excluded and
+                # the tiebreak on stock_code has the complete group to work on.
+                continue
+            if len(candidates) <= top_n:
+                # Fewer candidates than slots, from a window smaller than the
+                # catalogue: there is more out there. Not "nothing was excluded"
+                # -- that reading was the first version of this check, and the
+                # test with a 30-wide tie group and a 4-wide window caught it.
+                still_ambiguous.append(slot)
+                continue
+            # Ambiguous when the boundary distance reaches the last thing
+            # fetched: an equally distant product may sit just outside.
+            if candidates[top_n - 1][0] >= candidates[-1][0]:
+                still_ambiguous.append(slot)
+        if not still_ambiguous:
+            break
+        pending = still_ambiguous
+        width = min(width * 4, matrix.shape[0])
+
+    return shortlists
+
+
 def content_fallback(
     dim_product: pd.DataFrame, covered: set[str], cfg: dict
 ) -> pd.DataFrame:
@@ -208,31 +274,25 @@ def content_fallback(
     # order the catalogue happened to arrive in, so reordering it changed the
     # recommendations for 15.7% of cold-start products.
     #
-    # Two changes, both measured against three catalogue permutations on the
-    # real extract. Sorting each list by (distance, stock_code) before
-    # truncating takes 15.7% to 6.2%; it fixes the order within the returned
-    # set but not which candidates are in it when a tie straddles the boundary.
-    # Fetching CANDIDATE_WIDTH rather than top_n + 1 takes it to 0.45%. The
-    # residual 12 products have tie groups wider than the fetch: raising the
-    # width to 125 leaves the same 12, so it is not a width worth paying for.
+    # Measured against three catalogue permutations on the real extract.
+    # Sorting each list by (distance, stock_code) before truncating takes 15.7%
+    # to 6.2%; it fixes the order within the returned set but not which
+    # candidates are in it when a tie straddles the boundary. A wider fixed
+    # fetch takes it to 0.45% and stops there -- 125 leaves the same 12
+    # products as 50 -- because no fixed width outruns every tie group.
+    # _tie_complete_neighbours widens per product until the cut is unambiguous,
+    # which takes it to 0.00%.
     nn = NearestNeighbors(
         n_neighbors=min(CANDIDATE_WIDTH, len(catalogue)), metric="cosine"
     ).fit(matrix)
-    distances, idx = nn.kneighbors(matrix[cold.index.to_numpy()])
+    codes = catalogue["stock_code"].to_numpy()
+    shortlists = _tie_complete_neighbours(
+        nn, matrix, cold.index.to_numpy(), codes, cold["stock_code"].to_numpy(), top_n
+    )
 
     rows = []
-    for i, neighbours in enumerate(idx):
+    for i, candidates in enumerate(shortlists):
         src = cold.iloc[i]["stock_code"]
-        candidates = sorted(
-            (
-                # Rounded because two mathematically equal cosine distances can
-                # differ in the last bits, which would make the tiebreaker
-                # depend on floating-point noise instead of resolving it.
-                (round(float(distance), 12), catalogue.iloc[j]["stock_code"])
-                for distance, j in zip(distances[i], neighbours, strict=True)
-                if catalogue.iloc[j]["stock_code"] != src
-            )
-        )
         rank = 0
         for _, dst in candidates:
             rank += 1
