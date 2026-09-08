@@ -45,3 +45,35 @@ def test_documented_examples_match_committed_figures():
     )
     assert f"{figures['t_light_products']} different products" in guide
     assert f"median lift of {figures['t_light_median_lift']:.1f}" in guide
+
+
+def test_readme_evaluation_table_matches_the_evaluation_report():
+    """The three hit-rates move whenever the recommender changes.
+
+    They did in the change that added this test: fixing the content fallback's
+    tie handling moved hybrid from 56.30% to 56.32% and content from 51.66% to
+    51.71%. A table typed once and left alone would have kept the old pair, and
+    nothing in the repository would have disagreed with it.
+    """
+    report = json.loads((ROOT / "reports/evaluation.json").read_text(encoding="utf-8"))
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    labels = {
+        "Hybrid": "hybrid",
+        "Most popular": "most_popular",
+        "Content TF-IDF": "content_tfidf",
+    }
+    for label, key in labels.items():
+        model = report["models"][key]
+        row = (
+            f"| {label} | {100 * model['hit_rate_at_k']:.2f}% "
+            f"| {100 * model['query_coverage']:.2f}% |"
+        )
+        assert row in readme, f"README does not carry the current row for {label}"
+
+
+def test_readme_query_count_matches_the_evaluation_report():
+    report = json.loads((ROOT / "reports/evaluation.json").read_text(encoding="utf-8"))
+    queries = report["models"]["hybrid"]["queries"]
+    assert f"The {queries:,} queries are basket-completion queries" in (
+        ROOT / "README.md"
+    ).read_text(encoding="utf-8")
