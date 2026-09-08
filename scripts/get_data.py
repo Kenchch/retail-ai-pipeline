@@ -27,6 +27,8 @@ import os
 import random
 import shutil
 import sys
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -94,7 +96,31 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _fetch(url: str, dest: Path) -> None:
+def _attempt(url: str, part: Path) -> None:
+    """One pass at the file, resuming from whatever `part` already holds.
+
+    The Range header is a request, not a guarantee. A server that ignores it
+    answers 200 with the whole body, and appending that to a partial file
+    produces a longer-than-expected file whose bytes are garbage - so the reply
+    code decides the mode, and only a 206 appends.
+    """
+    have = part.stat().st_size if part.exists() else 0
+    request = urllib.request.Request(url)  # noqa: S310 - constant https URL
+    if have:
+        request.add_header("Range", f"bytes={have}-")
+
+    with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_S) as resp:  # noqa: S310
+        resuming = resp.status == 206
+        if have and not resuming:
+            # The server sent the whole file despite the Range header. Start
+            # over rather than append: this is the mirror declining to resume,
+            # not an error.
+            have = 0
+        with part.open("ab" if resuming else "wb") as out:
+            shutil.copyfileobj(resp, out)
+
+
+def _fetch(url: str, dest: Path, attempts: int = 4) -> None:
     """Download to a sidecar, verify, then rename into place.
 
     Writing straight to `dest` is what makes a half-download durable. Both
@@ -109,22 +135,50 @@ def _fetch(url: str, dest: Path) -> None:
     Either way a truncated CSV ends up at the final path, and download()'s
     exists() check then makes it permanent: every later run prints "Already
     present" and re-publishes from it. Nothing downstream catches this - a
-    20 MB truncation still quarantines at 3.70%, far under the 30% ceiling, so
-    the gate passes and the run exits 0 having silently dropped 55% of the
-    data. Recommendations are ratios, so they do not come out smaller, they
-    come out *different*, at the same apparent confidence.
+    20 MB truncation still quarantines at 3.70%, under the 6% ceiling, so the
+    gate passes and the run exits 0 having silently dropped 55% of the data.
+    Recommendations are ratios, so they do not come out smaller, they come out
+    *different*, at the same apparent confidence.
 
     A `.part` sidecar plus a digest check makes the failure loud and, crucially,
     leaves no artefact behind for the next run to trust.
+
+    The retry exists because the failure this guards against is the common one:
+    45 MB from a mirror, and a connection that drops two thirds of the way
+    through costs the whole download. Attempts resume from the sidecar with a
+    Range request, so a drop costs the remainder rather than the file. The
+    sidecar therefore survives *between* attempts and is still removed at the
+    end - a partial file must never outlive the call that created it.
+
+    Retrying does not weaken the size and digest gate. Those run once, after
+    the attempts, on whatever the sidecar ended up holding, so a resume that
+    stitched together bytes from two different files fails exactly as loudly as
+    a truncation.
     """
     part = dest.with_name(dest.name + ".part")
     part.unlink(missing_ok=True)
     try:
-        with (
-            urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as resp,
-            part.open("wb") as out,
-        ):
-            shutil.copyfileobj(resp, out)
+        for attempt in range(1, attempts + 1):
+            try:
+                _attempt(url, part)
+            except (OSError, urllib.error.HTTPError) as exc:
+                have = part.stat().st_size if part.exists() else 0
+                if attempt == attempts:
+                    raise OSError(
+                        f"{dest.name}: {attempts} attempts failed, last was "
+                        f"{exc}. {have:,} of {EXPECTED_BYTES:,} bytes were "
+                        "fetched; nothing was published."
+                    ) from exc
+                # Linear, not exponential: this is a flaky connection to one
+                # mirror, not a rate limit to back away from.
+                print(
+                    f"  attempt {attempt} failed after {have:,} bytes ({exc}); "
+                    f"resuming in {attempt}s"
+                )
+                time.sleep(attempt)
+                continue
+            if part.stat().st_size >= EXPECTED_BYTES:
+                break
 
         got = part.stat().st_size
         if got != EXPECTED_BYTES:

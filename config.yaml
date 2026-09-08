@@ -25,9 +25,25 @@ extract:
 
 quality:
   min_unit_price: 0.01
+  # A tripwire, and it currently catches nothing on its own: all 120 rows above
+  # this cap carry a stock code the non_product_stock_code rule already rejects
+  # (M, AMAZONFEE, DOT, POST, CRUK, BANK CHARGES, B, D), so removing the rule
+  # today would not load a single extra row. It stays because it is the only
+  # rule that would notice a genuine product line priced like an adjustment.
+  # The headroom is real rather than assumed: the highest product-coded unit
+  # price in the extract is GBP 649.50, a 60-piece wicker picnic basket, and
+  # only 2 product rows exceed GBP 500.
   max_unit_price: 1000.0
   non_product_codes: ["POST", "DOT", "M", "C2", "S", "BANK CHARGES", "AMAZONFEE", "CRUK", "PADS", "B", "D"]
-  max_quarantine_rate: 0.30   # above this the run fails instead of loading
+  # 1.7x the 3.57% this extract produces. The previous 0.30 was 8.4x it, which
+  # is not a ceiling: every blocking rule could have fired three times as often
+  # and the run would still have loaded and reported itself healthy.
+  #
+  # 6% is where the two failure modes balance. Month-to-month variation in
+  # returns and cancellations does not reach it -- the largest single blocking
+  # rule, non_positive_quantity, is 1.96% -- while a doubling of the overall
+  # rate does, which is the event this is meant to stop.
+  max_quarantine_rate: 0.06   # above this the run fails instead of loading
 
 recommend:
   min_support_count: 30       # a pair must appear in at least this many baskets

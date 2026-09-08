@@ -209,7 +209,8 @@ CHECKS: list[Check] = [
         "price_outlier",
         "validity",
         True,
-        "Above the configured cap - almost always an adjustment line",
+        "Above the configured cap - on this extract, always an adjustment line "
+        "another rule also rejects; see max_unit_price in config.yaml",
         lambda d, c: d["unit_price"] > c["quality"]["max_unit_price"],
     ),
     Check(

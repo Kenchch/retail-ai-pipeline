@@ -297,3 +297,13 @@ def test_a_failing_gate_publishes_nothing(
     assert not (tmp_path / "published" / "CURRENT.json").exists(), (
         "a failed quality gate still published a pointer"
     )
+
+    # The watcher is trigger_rule="one_failed" and fails on purpose: it exists
+    # so that a run with a failed task cannot end up green at the DAG level.
+    # The happy-path test asserts it stays skipped; nothing asserted that it
+    # actually fires, so a watcher wired to the wrong rule -- or dropped from
+    # the DAG -- would have been caught by neither.
+    assert states.get("watcher") == "failed", (
+        f"the gate failed and the watcher did not fire, so the run would not "
+        f"have gone red: {states}"
+    )

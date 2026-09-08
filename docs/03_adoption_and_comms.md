@@ -107,6 +107,22 @@ a suitable control before attributing changes to training. The weekly table in
 *To Merchandising, Category Management, Online Trading, Marketing, Store Ops and
 Data & AI. Kept to 300 words, because a 900-word update is not read.*
 
+**How to read this.** Two kinds of sentence are mixed below, and an example is
+only worth reading if you can tell them apart.
+
+Every *figure* is computed, and comes from `reports/adoption_report.md` — the
+headline four from its metrics table, Store Ops from its by-team table, the
+response count from summing that table's last column, and the workshop
+before/after pairs from its weekly table, reading weeks 2→3 and 7→8 because
+the workshops fall in weeks 3 and 8. `tests/test_adoption_update.py` holds each
+of them against the report, so this template cannot quietly disagree with the
+data it claims to describe.
+
+Every *finding* is written — what the comments said, why Store Ops is
+struggling, what the second workshop did differently. Simulated telemetry
+cannot produce those, and inventing them is the point of a template: it shows
+the shape a monthly update takes. Do not read them as results.
+
 **Frequently Bought Together — month 3**
 
 - **74% of you used it in the last four weeks**, against a 70% target.
