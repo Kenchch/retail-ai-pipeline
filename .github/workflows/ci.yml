@@ -87,8 +87,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install "apache-airflow==3.3.1" \
             --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.1/constraints-3.11.txt"
+          # requirements.lock, not requirements.txt: the same pinned set the
+          # test job installs. requirements.txt floats (pandas>=2.0 and so on),
+          # so this job used to resolve a different pandas every week from the
+          # one the tests ran against, and a failure here could mean either a
+          # real break or a fresh release nobody chose.
+          #
+          # The lock is applied AFTER Airflow's constraints and wins where they
+          # disagree. Checked rather than assumed: pip check is clean, and
+          # test_dag.py and test_dag_run.py both pass under it -- 14 tests,
+          # including the full dag.test() execution -- on pandas 3.0.5, numpy
+          # 2.4.6 and scikit-learn 1.9.0.
           pip install -r requirements-airflow.txt \
-            -r requirements.txt -r requirements-dbt.txt pip-audit
+            -r requirements.lock -r requirements-dbt.txt pip-audit
           # The project is deliberately NOT installed here: this job stands in for
           # an Airflow worker, where dags/retail_pipeline_dag.py bootstraps its own
           # sys.path because the scheduler loads dags/ on its own.
@@ -142,7 +153,13 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dbt]" -r requirements.txt -r requirements-dbt.txt pip-audit
+          # Same pinned set as the other two jobs. This job compares the
+          # committed reports against a fresh run, so the versions that produce
+          # them have to be the versions the lock names -- under a floating
+          # requirements.txt, "the committed reports are reproducible" was a
+          # claim about whichever resolution pip happened to reach that day.
+          pip install -r requirements.lock -r requirements-dbt.txt pip-audit
+          pip install -e . --no-deps
 
       - name: Download the reference inputs
         run: python scripts/get_data.py
