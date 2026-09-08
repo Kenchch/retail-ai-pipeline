@@ -3,7 +3,7 @@
 The pipeline in this repo publishes a warehouse star schema. This folder turns
 it into a **Power BI semantic model**: surrogate keys, an unknown member, a
 calendar that supports time intelligence, a second fact table for data quality,
-a many-to-many bridge, a 35-measure DAX library and dynamic row-level security.
+a many-to-many bridge, a 37-measure DAX library and dynamic row-level security.
 
 Two fact tables on conformed dimensions, so one set of slicers answers both
 *what sold* and *what we rejected and why*.
@@ -37,7 +37,7 @@ source file and the report.
 | | |
 |---|---|
 | [`MODEL.md`](MODEL.md) | The design and the decisions behind it — read this one |
-| [`measures.dax`](measures.dax) | 35 measures and the three RLS role expressions |
+| [`measures.dax`](measures.dax) | 37 measures and the three RLS role expressions |
 | [`BUILD_POWERBI.md`](BUILD_POWERBI.md) | Click-by-click build, ~45 min, with the numbers to validate against |
 | [`build_star_schema.py`](build_star_schema.py) | Warehouse star → semantic model CSVs |
 | [`screenshots/`](screenshots/) | Model view and the three report pages |
