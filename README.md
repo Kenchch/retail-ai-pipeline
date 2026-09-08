@@ -48,9 +48,9 @@ hit retrieves another product in that basket. All three models use training data
 
 | Model | Hit-rate@5 | Query coverage |
 |---|---:|---:|
-| Hybrid | 56.30% | 95.19% |
+| Hybrid | 56.32% | 95.19% |
 | Most popular | 52.84% | 100.00% |
-| Content TF-IDF | 51.66% | 95.19% |
+| Content TF-IDF | 51.71% | 95.19% |
 
 The 161,844 queries are basket-completion queries, not independent customers.
 This offline comparison does not measure sales uplift. The

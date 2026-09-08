@@ -10,8 +10,8 @@
   "models": {
     "hybrid": {
       "queries": 161844,
-      "hits": 91119,
-      "hit_rate_at_k": 0.5630051160376659,
+      "hits": 91145,
+      "hit_rate_at_k": 0.5631657645634067,
       "query_coverage": 0.951935196856232
     },
     "most_popular": {
@@ -22,8 +22,8 @@
     },
     "content_tfidf": {
       "queries": 161844,
-      "hits": 83610,
-      "hit_rate_at_k": 0.5166085860458219,
+      "hits": 83696,
+      "hit_rate_at_k": 0.517139961938657,
       "query_coverage": 0.951935196856232
     }
   },

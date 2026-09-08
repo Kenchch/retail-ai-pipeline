@@ -62,6 +62,13 @@ COLUMNS = [
     "lift",
 ]
 
+# How many nearest neighbours the content fallback asks for before sorting and
+# truncating to top_n. Chosen by measurement, not by feel: under three
+# permutations of the real catalogue, top_n + 1 leaves 6.2% of cold-start
+# products with different published recommendations, 20 leaves 1.4%, 50 leaves
+# 0.45%, and 125 leaves the same 0.45%. See content_fallback.
+CANDIDATE_WIDTH = 50
+
 
 def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     c = cfg["recommend"]
@@ -137,8 +144,23 @@ def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     rules = rules[
         (rules["confidence"] >= c["min_confidence"]) & (rules["lift"] >= c["min_lift"])
     ]
+    # recommended_stock_code is a tiebreaker for a tie that exists -- one
+    # product of the 1,120 with rules has a lift tie straddling its fifth slot
+    # -- but it is not fixing an observed defect, and the comment should not
+    # imply otherwise. This path is already order-independent: `groupby` sorts
+    # its keys, each basket is `sorted(set(...))`, and pandas sorts multiple
+    # columns with a stable lexsort. Shuffling the fact table changed nothing,
+    # on the real extract or on fixtures up to 1,024 tied candidates.
+    #
+    # What the key buys is that the guarantee stops depending on three
+    # incidental properties holding at once, none of which this module states
+    # or tests. The tied product is decided by the data after this, rather than
+    # decided correctly by luck.
     top = (
-        rules.sort_values(["stock_code", "lift"], ascending=[True, False])
+        rules.sort_values(
+            ["stock_code", "lift", "recommended_stock_code"],
+            ascending=[True, False, True],
+        )
         .groupby("stock_code")
         .head(c["top_n"])
         .copy()
@@ -179,19 +201,40 @@ def content_fallback(
         )
         return pd.DataFrame()
 
+    # Cosine distance ties are not an edge case on a giftware catalogue: 22.1%
+    # of the cold-start neighbour lists contain one, and 216 of them contain
+    # more than one distance of exactly zero -- products whose descriptions are
+    # identical text. Which of a tied group got published was decided by the
+    # order the catalogue happened to arrive in, so reordering it changed the
+    # recommendations for 15.7% of cold-start products.
+    #
+    # Two changes, both measured against three catalogue permutations on the
+    # real extract. Sorting each list by (distance, stock_code) before
+    # truncating takes 15.7% to 6.2%; it fixes the order within the returned
+    # set but not which candidates are in it when a tie straddles the boundary.
+    # Fetching CANDIDATE_WIDTH rather than top_n + 1 takes it to 0.45%. The
+    # residual 12 products have tie groups wider than the fetch: raising the
+    # width to 125 leaves the same 12, so it is not a width worth paying for.
     nn = NearestNeighbors(
-        n_neighbors=min(top_n + 1, len(catalogue)), metric="cosine"
+        n_neighbors=min(CANDIDATE_WIDTH, len(catalogue)), metric="cosine"
     ).fit(matrix)
-    _, idx = nn.kneighbors(matrix[cold.index.to_numpy()])
+    distances, idx = nn.kneighbors(matrix[cold.index.to_numpy()])
 
     rows = []
     for i, neighbours in enumerate(idx):
         src = cold.iloc[i]["stock_code"]
+        candidates = sorted(
+            (
+                # Rounded because two mathematically equal cosine distances can
+                # differ in the last bits, which would make the tiebreaker
+                # depend on floating-point noise instead of resolving it.
+                (round(float(distance), 12), catalogue.iloc[j]["stock_code"])
+                for distance, j in zip(distances[i], neighbours, strict=True)
+                if catalogue.iloc[j]["stock_code"] != src
+            )
+        )
         rank = 0
-        for j in neighbours:
-            dst = catalogue.iloc[j]["stock_code"]
-            if dst == src:
-                continue
+        for _, dst in candidates:
             rank += 1
             # NaN, not 0.0. Support, confidence and lift are co-occurrence
             # statistics and are undefined for a text-similarity match - there
