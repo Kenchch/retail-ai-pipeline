@@ -32,9 +32,9 @@ Evidence: [run metrics](reports/run_metrics.json), [quality report](reports/data
 The [R companion analysis](https://github.com/Kenchch/online-retail-analysis-r)
 reports £9,883,659.86 after matching cancellations. It retains duplicates and
 uses a different acceptance policy; its figure is not this pipeline's revenue.
-The Python fact now flags 2,729 accepted lines matched to source credit notes
-(29.38% of all 9,288 credit-note lines). Gross revenue remains unchanged;
-**net of these exact matches is £9,859,031.12**. This uses full-extract hindsight
+The Python fact now flags 2,725 accepted lines matched to source credit notes
+(29.34% of all 9,288 credit-note lines). Gross revenue remains unchanged;
+**net of these exact matches is £9,861,394.40**. This uses full-extract hindsight
 and attributes the adjustment to the original sale date, not the credit date.
 Unmatched and partial credits are excluded. [Recomputed evidence](reports/cancellations.json)
 is checked against the published fact by `python scripts/check_cancellations.py`.

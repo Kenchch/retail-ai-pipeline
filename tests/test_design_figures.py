@@ -40,6 +40,41 @@ def test_headline_row_counts_match_the_published_run():
     assert f"{m['recommendations']:,} rows covering the full catalogue" in design
 
 
+def test_credit_matching_figures_match_their_report():
+    """Five numbers in one paragraph, all from one report, all of which move
+    together whenever the matching policy changes -- as they did when the
+    credit side started deduplicating by the quality rule's key."""
+    c = json.loads((ROOT / "reports/cancellations.json").read_text(encoding="utf-8"))
+    design = _design()
+    assert (
+        f"matches {c['matched_accepted_sales_rows']:,} accepted sales "
+        f"({c['matched_share_of_all_credit_rows_pct']}% of all "
+        f"{c['credit_note_rows']:,}" in design
+    )
+    assert f"£{c['gross_gbp']:,.2f} gross" in design
+    assert f"minus £{c['matched_credit_gbp']:,.2f} matched value" in design
+    # The line wraps between "equals" and the figure, so match the figure
+    # alone rather than pinning the document's line breaks into a test.
+    net = c["net_of_matched_cancellations_gbp"]
+    assert f"£{net:,.2f}." in design
+
+
+def test_the_gap_against_the_r_analysis_is_arithmetic_not_recollection():
+    """The comparison is the point of quoting R's figure at all. It is stated
+    as a subtraction, so it has to survive being performed."""
+    c = json.loads((ROOT / "reports/cancellations.json").read_text(encoding="utf-8"))
+    design = _design()
+    match = re.search(r"R's £([\d,]+\.\d\d) differs by £([\d,]+\.\d\d)", design)
+    assert match, "the R comparison sentence is no longer in the shape this test reads"
+    r_net = float(match.group(1).replace(",", ""))
+    stated_gap = float(match.group(2).replace(",", ""))
+    actual = r_net - c["net_of_matched_cancellations_gbp"]
+    assert abs(actual - stated_gap) < 0.005, (
+        f"the stated gap is £{stated_gap:,.2f}; £{r_net:,.2f} minus the current "
+        f"net £{c['net_of_matched_cancellations_gbp']:,.2f} is £{actual:,.2f}"
+    )
+
+
 def test_module_count_matches_the_package():
     """Adding a stage module without saying so is exactly how "Four" survived
     into a package of seven."""

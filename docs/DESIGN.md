@@ -39,7 +39,7 @@ Source: UCI **Online Retail** — a UK online giftware retailer, Dec 2010 – De
 | Loaded | 522,566 line items · 3,803 products · 4,334 customers · 374 days (305 traded) |
 | Recommendations | 17,083 rows covering the full catalogue |
 | Simulated adoption dataset | 62 fictional users, 5 teams, 12 weeks |
-| Runtime | 14.1 s of compute — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top |
+| Runtime | 10.6 s of compute on the machine that last published — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top. It moves with the hardware, not with the pipeline: the same code has recorded 9.3, 14.1 and 10.6 |
 
 The strongest associations are ones a merchandiser would expect — the cheapest
 sanity check there is:
@@ -337,11 +337,12 @@ The fact retains `reversed_by_credit` and nullable `matched_credit_invoice`;
 no accepted sales rows are deleted. Rebuild old publications before using the
 new dbt models or BI exporter, which require the new schema.
 
-Full-source recomputation matches 2,729 accepted sales (29.38% of all 9,288
-C-prefixed lines): £10,247,353.28 gross minus £388,322.16 matched value equals
-£9,859,031.12. R's £9,883,659.86 differs by £24,628.74: R retains duplicate
+Full-source recomputation matches 2,725 accepted sales (29.34% of all 9,288
+C-prefixed lines): £10,247,353.28 gross minus £385,958.88 matched value equals
+£9,861,394.40. R's £9,883,659.86 differs by £22,265.46: R retains duplicate
 sales and matches before its own product filtering, while Python matches
-against its quality-accepted sales. The existing gross-policy bridge above
+against its quality-accepted sales and, since the credit side is deduplicated
+by the same rule, against each credit note once. The existing gross-policy bridge above
 and this net figure describe different stages; subtracting R's matched count
 from Python's row count is invalid. [Evidence](../reports/cancellations.json)
 records the source SHA and is checked against every value in the published fact.

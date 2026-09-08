@@ -77,3 +77,19 @@ def test_readme_query_count_matches_the_evaluation_report():
     assert f"The {queries:,} queries are basket-completion queries" in (
         ROOT / "README.md"
     ).read_text(encoding="utf-8")
+
+
+def test_readme_credit_matching_figures_match_their_report():
+    """The README states the same three figures as DESIGN.md, in its own
+    wording. Two copies of a number is two chances to leave one behind."""
+    c = json.loads((ROOT / "reports/cancellations.json").read_text(encoding="utf-8"))
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert (
+        f"flags {c['matched_accepted_sales_rows']:,} accepted lines matched" in readme
+    )
+    assert (
+        f"({c['matched_share_of_all_credit_rows_pct']}% of all "
+        f"{c['credit_note_rows']:,} credit-note lines)" in readme
+    )
+    net = c["net_of_matched_cancellations_gbp"]
+    assert f"**net of these exact matches is \u00a3{net:,.2f}**" in readme
