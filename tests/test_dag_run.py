@@ -153,10 +153,31 @@ def project(tmp_path):
         tmp_path / "data" / "raw" / "usage_events.csv", cfg["adoption"]["roster"]
     )
 
-    # dbt reads the published pointer through its own project; the DAG's dbt task
-    # is stubbed below, so only the directory needs to exist.
+    # dbt is not stubbed: it builds the mart and runs its data tests against
+    # what this DAG publishes. It needs its own project, and `paths.dbt` in the
+    # copied config resolves to this one, so the build writes its mart database,
+    # its CURRENT.json and dbt's target/ and logs/ here rather than into the
+    # checkout the tests are running from.
     shutil.copytree(ROOT / "dbt", tmp_path / "dbt", dirs_exist_ok=True)
     return tmp_path, config_path, rows
+
+
+def _repository_dbt_state() -> dict[str, str]:
+    """Fingerprint the checkout's dbt directory, target/ and logs/ included.
+
+    Those are gitignored, so nothing here would ever show up in a diff -- which
+    is the reason to assert on it rather than trust CI to notice. What a test
+    run used to leave behind was a local mart pointed at a 60-basket fixture,
+    silently replacing the one a person had built from the real extract.
+    """
+    import hashlib
+
+    state = {}
+    for path in sorted((ROOT / "dbt").rglob("*")):
+        if path.is_file():
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            state[str(path.relative_to(ROOT))] = digest
+    return state
 
 
 def test_the_dag_runs_and_publishes(
@@ -165,6 +186,7 @@ def test_the_dag_runs_and_publishes(
     tmp_path, config_path, source_rows = project
     monkeypatch.setenv("RETAIL_CONFIG", str(config_path))
     monkeypatch.setenv("AIRFLOW__CORE__DAGS_FOLDER", str(ROOT / "dags"))
+    repository_dbt_before = _repository_dbt_state()
 
     from dags import retail_pipeline_dag as dag_module
 
@@ -218,6 +240,22 @@ def test_the_dag_runs_and_publishes(
     # clear_staging is all_success, so a clean run leaves nothing behind for it.
     staging = tmp_path / "data" / "staging" / run_id
     assert not staging.exists(), "this run's staging hand-off was not cleared"
+
+    # And the run stayed inside the fixture. dbt_build resolves its project
+    # from `paths.dbt`; when it resolved from the wrapper's own ROOT instead, a
+    # single fixture run wrote 84 files into the checkout and repointed the
+    # local mart at fixture data.
+    after = _repository_dbt_state()
+    added = sorted(set(after) - set(repository_dbt_before))
+    changed = sorted(
+        k
+        for k in set(after) & set(repository_dbt_before)
+        if after[k] != repository_dbt_before[k]
+    )
+    assert not added and not changed, (
+        f"the run wrote into the repository's dbt project: added={added}, "
+        f"changed={changed}"
+    )
 
 
 def test_a_failing_gate_publishes_nothing(

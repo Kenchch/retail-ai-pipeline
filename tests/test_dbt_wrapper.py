@@ -25,6 +25,12 @@ def _published(tmp_path, monkeypatch):
             "data_runs": tmp_path / "data" / "runs",
             "reports": tmp_path / "reports",
             "raw": tmp_path / "raw" / "replacement.csv",
+            # The dbt project comes from the config, and ROOT is deliberately
+            # left pointing at the real repository below. That makes every test
+            # in this file a check on it: if the wrapper resolved the project
+            # from ROOT again, these runs would write their marts and pointer
+            # into the checkout, and the assertions on tmp_path would fail.
+            "dbt": tmp_path / "dbt",
         }
     }
     manifest = {
@@ -39,7 +45,6 @@ def _published(tmp_path, monkeypatch):
         connection.execute(
             "INSERT INTO _publication VALUES (1, ?)", (manifest["run_id"],)
         )
-    monkeypatch.setattr(run_dbt, "ROOT", tmp_path)
     monkeypatch.setattr(run_dbt, "load_config", lambda: cfg)
     monkeypatch.setattr(run_dbt, "published_manifest", lambda _: dict(manifest))
     monkeypatch.setattr(run_dbt, "_dbt_executable", lambda: Path("dbt"))
@@ -65,7 +70,7 @@ def test_successful_build_atomically_replaces_the_validated_database(
     )
 
     def build(_, *, cwd, env, check):
-        assert cwd == tmp_path
+        assert cwd == run_dbt.ROOT
         assert check is True
         assert env["RETAIL_PUBLISHED_RUN_ID_SQL"] == manifest["run_id"]
         assert env["RETAIL_RAW_INPUT_NAME_SQL"] == "replacement.csv"
@@ -166,3 +171,49 @@ def test_open_reader_keeps_its_version_while_pointer_advances(tmp_path, monkeypa
             assert new.execute("select value from new_mart").fetchone() == (2,)
     finally:
         reader.close()
+
+
+def test_the_mart_goes_where_the_config_says_not_next_to_the_wrapper(
+    tmp_path, monkeypatch
+):
+    """The property the rest of this file now depends on, asserted directly.
+
+    Before `paths.dbt` existed the project directory was `ROOT / "dbt"`, so a
+    run pointed at a fixture by RETAIL_CONFIG still wrote its mart database,
+    its CURRENT.json and dbt's own target/ and logs/ into the repository -- 84
+    files on a measured fixture run, and a mart pointer swapped to fixture data
+    underneath anything reading the real one.
+    """
+    manifest = _published(tmp_path, monkeypatch)
+    elsewhere = tmp_path / "somewhere" / "else"
+    elsewhere.mkdir(parents=True)
+    monkeypatch.setattr(
+        run_dbt,
+        "load_config",
+        lambda: {
+            "paths": {
+                "data_runs": tmp_path / "data" / "runs",
+                "reports": tmp_path / "reports",
+                "raw": tmp_path / "raw" / "replacement.csv",
+                "dbt": elsewhere,
+            }
+        },
+    )
+
+    seen = {}
+
+    def build(command, *, cwd, env, check):
+        seen["project_dir"] = command[command.index("--project-dir") + 1]
+        seen["profiles_dir"] = command[command.index("--profiles-dir") + 1]
+        Path(env["RETAIL_DBT_PATH"]).write_bytes(b"new validated database")
+
+    monkeypatch.setattr(run_dbt.subprocess, "run", build)
+    assert run_dbt.main(expected_run_id=manifest["run_id"]) == 0
+
+    assert seen["project_dir"] == str(elsewhere)
+    assert seen["profiles_dir"] == str(elsewhere)
+    pointer = json.loads((elsewhere / "CURRENT.json").read_text())
+    assert (elsewhere / pointer["database"]).read_bytes() == b"new validated database"
+    assert not (tmp_path / "dbt" / "CURRENT.json").exists(), (
+        "the pointer was written next to the wrapper rather than where paths.dbt says"
+    )
