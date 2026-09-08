@@ -39,7 +39,7 @@ Source: UCI **Online Retail** — a UK online giftware retailer, Dec 2010 – De
 | Loaded | 522,566 line items · 3,803 products · 4,334 customers · 374 days (305 traded) |
 | Recommendations | 17,083 rows covering the full catalogue |
 | Simulated adoption dataset | 62 fictional users, 5 teams, 12 weeks |
-| Runtime | 9.3 s of compute — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top |
+| Runtime | 14.1 s of compute — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top |
 
 The strongest associations are ones a merchandiser would expect — the cheapest
 sanity check there is:
@@ -58,7 +58,7 @@ The warehouse this pipeline publishes is consumed by a Power BI semantic model
 in [`bi/`](../bi/) — star schema with surrogate keys and an unknown member, a
 calendar built for time intelligence, a second fact table for data quality
 joined on conformed dimensions, a many-to-many bridge for the quality rules, a
-35-measure DAX library and dynamic row-level security over an entitlement table.
+37-measure DAX library and dynamic row-level security over an entitlement table.
 
 ![Power BI sales overview](../bi/screenshots/page1-sales.png)
 
@@ -107,11 +107,13 @@ new file, and Windows BI readers can finish against their old version. Every mar
 and a cleared historical Airflow task refuses to validate a newer run that
 happens to be current.
 
-The project builds one contracted model, `mart_daily_sales`: one row per
-calendar day with revenue, distinct orders and guest-revenue share. It starts
-from the continuous `dim_date`, so closed days are represented by zeroes rather
-than disappearing. The mart casts the timestamp-backed warehouse `date_key` to
-a semantic `DATE`, and its enforced contract checks every output name and type.
+The project builds four contracted marts -- `mart_daily_sales`,
+`mart_customer_sales`, `mart_product_sales` and `mart_recommendations` -- each
+with an enforced contract checking every output name and type. `mart_daily_sales`
+is one row per calendar day with revenue, distinct orders and guest-revenue
+share. It starts from the continuous `dim_date`, so closed days are represented
+by zeroes rather than disappearing, and it casts the timestamp-backed warehouse
+`date_key` to a semantic `DATE`.
 
 `dbt build` also checks source keys, fact-to-dimension relationships, the input
 fingerprint record, and row conservation. The conservation assertion compares
@@ -136,7 +138,7 @@ which builds the report version from the staged tables; `publish` is the only
 task that writes to the warehouse, and `finalize` points `reports/CURRENT` at
 the version or archives it.
 
-Four modules, scheduled as twelve Airflow tasks
+Seven modules, scheduled as twelve Airflow tasks
 ([`dags/`](../dags/retail_pipeline_dag.py)) so a failure names the stage that broke.
 Every stage computes into per-run staging; a single `publish` task is the only
 thing that writes to the warehouse.
@@ -149,8 +151,11 @@ tests skip locally and CI installs it in a job of its own.
 Because `dbt_build` is an unconditional DAG task, every Airflow worker must
 install `requirements.txt`, `requirements-dbt.txt` and
 `requirements-airflow.txt`; CI verifies that combined environment against
-Airflow 3.3.1, audits the installed worker dependencies, and then proves that
-the DAG parses.
+Airflow 3.3.1, audits the installed worker dependencies, and then executes the
+DAG end to end with `dag.test()` against a fixture feed -- `tests/test_dag_run.py`
+runs all twelve tasks, dbt included, and asserts on the artefacts they leave on
+disk. Parsing was the previous bar, and it could not have caught a stage the DAG
+called incorrectly.
 
 **Scope: a single-machine Airflow, `LocalExecutor` or `SequentialExecutor`.**
 Staging, the warehouse and the reports are all local `pathlib` paths written
