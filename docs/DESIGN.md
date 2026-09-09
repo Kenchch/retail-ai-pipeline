@@ -71,18 +71,24 @@ rejected = 541,909 — the source row count.
 
 [`online-retail-analysis-r`](https://github.com/Kenchch/online-retail-analysis-r)
 uses the same SHA-256-pinned UCI dataset CSV mirror but applies cancellation netting and
-different duplicate handling:
+the same duplicate rule, and the two now agree:
 
-| Bridge | Revenue |
-|---|---:|
-| This pipeline: valid positive sales | £10,247,353.28 |
-| Exact duplicate invoice lines retained in R, quarantined by Python (5,223 rows; plus 3 PADS lines at £0.001) | +£24,765.59 |
-| R positive sales before credit matching | £10,272,118.87 |
-| Matched sales removed when a later or same-minute credit note reverses them | −£388,459.01 |
-| **R analysis: cancellation-netted sales** | **£9,883,659.86** |
+| Measure | This pipeline | R analysis |
+|---|---:|---:|
+| Gross positive product sales | £10,247,353.28 | £10,247,353.28 |
+| Value removed by matched credit notes | £385,958.88 | £385,958.88 |
+| **Net of matched cancellations** | **£9,861,394.40** | **£9,861,394.40** |
 
-This pipeline's figure is gross valid positive sales, not cancellation-netted
-revenue. The R project answers the latter question.
+They did not agree until the R side adopted this pipeline's duplicate key. The
+gap was £24,765.59 — 5,223 exact duplicate product sale lines it kept and this
+pipeline quarantines, plus 3 PADS lines at £0.001 — and it was documented as a
+scope difference rather than resolved. Two figures for the same file, each
+correct under its own rules, still leave a reader deciding which one to believe.
+
+The row counts still differ and that is not a discrepancy: R records 2,769
+sales offset by a credit against this pipeline's 2,725. The 44 are service-code
+lines that a credit cancels in R before its service-code rule removes them.
+They are not product revenue on either side, so they move neither total.
 
 
 ## Design notes
@@ -339,12 +345,13 @@ new dbt models or BI exporter, which require the new schema.
 
 Full-source recomputation matches 2,725 accepted sales (29.34% of all 9,288
 C-prefixed lines): £10,247,353.28 gross minus £385,958.88 matched value equals
-£9,861,394.40. R's £9,883,659.86 differs by £22,265.46: R retains duplicate
-sales and matches before its own product filtering, while Python matches
-against its quality-accepted sales and, since the credit side is deduplicated
-by the same rule, against each credit note once. The existing gross-policy bridge above
-and this net figure describe different stages; subtracting R's matched count
-from Python's row count is invalid. [Evidence](../reports/cancellations.json)
+£9,861,394.40 — the same figure the R analysis reports, since it adopted this
+pipeline's duplicate key. Its matched count is 2,769 against this pipeline's
+2,725, and the 44 are service-code lines a credit cancels in R before its
+service-code rule removes them: not product revenue on either side, so they
+move neither total. Subtracting one project's matched count from the other's
+row count remains invalid even now the values agree.
+[Evidence](../reports/cancellations.json)
 records the source SHA and is checked against every value in the published fact.
 
 These flags use the entire supplied extract, including later credits. They are

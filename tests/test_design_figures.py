@@ -53,26 +53,64 @@ def test_credit_matching_figures_match_their_report():
     )
     assert f"£{c['gross_gbp']:,.2f} gross" in design
     assert f"minus £{c['matched_credit_gbp']:,.2f} matched value" in design
-    # The line wraps between "equals" and the figure, so match the figure
-    # alone rather than pinning the document's line breaks into a test.
+    # Whitespace-normalised and matched with its "equals", rather than by the
+    # punctuation that happens to follow. This assertion read `f"£{net}."` and
+    # broke when the sentence gained a clause after the figure -- the number
+    # was right and the test failed on a full stop.
     net = c["net_of_matched_cancellations_gbp"]
-    assert f"£{net:,.2f}." in design
+    assert f"equals £{net:,.2f}" in " ".join(design.split())
 
 
-def test_the_gap_against_the_r_analysis_is_arithmetic_not_recollection():
-    """The comparison is the point of quoting R's figure at all. It is stated
-    as a subtraction, so it has to survive being performed."""
+def test_the_reconciliation_with_r_states_this_pipelines_own_figures():
+    """The table claims the two projects agree, so both columns are this
+    pipeline's numbers written twice -- and the ones in this pipeline's column
+    have to be the ones it actually produced.
+
+    This used to assert a *gap*, computed from a sentence that read "R's X
+    differs by Y". There is no gap now; what needs guarding instead is that the
+    agreement is stated with current figures rather than frozen ones, because a
+    table asserting equality is exactly where a stale number is hardest to see.
+    """
     c = json.loads((ROOT / "reports/cancellations.json").read_text(encoding="utf-8"))
     design = _design()
-    match = re.search(r"R's £([\d,]+\.\d\d) differs by £([\d,]+\.\d\d)", design)
-    assert match, "the R comparison sentence is no longer in the shape this test reads"
-    r_net = float(match.group(1).replace(",", ""))
-    stated_gap = float(match.group(2).replace(",", ""))
-    actual = r_net - c["net_of_matched_cancellations_gbp"]
-    assert abs(actual - stated_gap) < 0.005, (
-        f"the stated gap is £{stated_gap:,.2f}; £{r_net:,.2f} minus the current "
-        f"net £{c['net_of_matched_cancellations_gbp']:,.2f} is £{actual:,.2f}"
+
+    rows = {
+        "Gross positive product sales": c["gross_gbp"],
+        "Value removed by matched credit notes": c["matched_credit_gbp"],
+    }
+    for label, value in rows.items():
+        assert f"| {label} | £{value:,.2f} | £{value:,.2f} |" in design, label
+
+    net = c["net_of_matched_cancellations_gbp"]
+    assert (
+        f"| **Net of matched cancellations** | **£{net:,.2f}** | **£{net:,.2f}** |"
+        in (design)
     )
+    # And the row is a subtraction, performed rather than trusted.
+    assert abs(c["gross_gbp"] - c["matched_credit_gbp"] - net) < 0.005
+
+
+def test_the_matched_count_difference_against_r_is_stated_with_our_own_number():
+    """R matches more rows than this pipeline and the totals still agree. The
+    explanation is load-bearing -- without it the two counts read as a bug --
+    so this pipeline's half of it cannot go stale."""
+    c = json.loads((ROOT / "reports/cancellations.json").read_text(encoding="utf-8"))
+    ours = c["matched_accepted_sales_rows"]
+    theirs = 2769  # R's, from its committed cleaning_audit.csv
+    # Whitespace-normalised: the sentence wraps, and where it wraps is not a
+    # fact worth pinning into a test.
+    design = " ".join(_design().split())
+
+    # BOTH times, counted. The comparison is made twice in this document, and
+    # an `in` check was satisfied by either one -- so changing the figure in
+    # the second passage left the test green while the two passages disagreed
+    # with each other.
+    assert design.count(f"against this pipeline's {ours:,}") == 2
+    assert design.count(f"R records {theirs:,}") == 1
+    assert design.count(f"matched count is {theirs:,}") == 1
+    # The 44 is the subtraction, not a third number.
+    assert design.count(f"The {theirs - ours} are service-code lines") == 1
+    assert design.count(f"the {theirs - ours} are service-code lines") == 1
 
 
 def test_module_count_matches_the_package():
