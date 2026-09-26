@@ -14,6 +14,6 @@ from. If a check was added, say how you know it would go red.
 
 <!--
 One line: drafted by an AI tool, reviewed by a human, or neither. This
-repository states its practice on the profile README and this is where an
-individual change records its own.
+repository states its practice under "How this was built" in the README, and
+this is where an individual change records its own.
 -->
