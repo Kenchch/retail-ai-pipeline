@@ -1,8 +1,8 @@
-FROM apache/airflow:3.3.1-python3.11
+FROM apache/airflow:3.3.2-python3.11
 USER airflow
 WORKDIR /opt/retail
 COPY --chown=airflow:root . .
-RUN pip install --no-cache-dir "apache-airflow==3.3.1" \
+RUN pip install --no-cache-dir "apache-airflow==3.3.2" \
     -r requirements-airflow.txt -r requirements-dbt.txt \
     "psycopg2-binary>=2.9,<3" -e . && pip check
 RUN mkdir -p data reports published dbt/runs && cp -a dbt /opt/retail/dbt-seed

@@ -1,5 +1,5 @@
 # Local development only; the UI is bound to localhost.
-# Adapted from the Apache Airflow 3.3.1 Compose architecture, using LocalExecutor.
+# Adapted from the Apache Airflow 3.3.2 Compose architecture, using LocalExecutor.
 name: retail-local
 x-airflow: &airflow
   build:

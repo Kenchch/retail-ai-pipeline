@@ -67,3 +67,8 @@ The screenshot is captured from the actual UI (Pacific/Auckland display time).
 
 This demonstrates the Compose infrastructure and full-data DAG execution. CI
 also executes success and failure DAG fixtures independently using `dag.test()`.
+
+The image has since moved to Airflow 3.3.2 (27 September 2026), for three
+security advisories against 3.3.1: PYSEC-2026-3988, -3989 and -3990. The run
+above was on 3.3.1 and has not been repeated on 3.3.2; CI's `dag.test()`
+execution and `pip-audit` of the worker environment run on 3.3.2.

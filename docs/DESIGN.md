@@ -157,7 +157,7 @@ tests skip locally and CI installs it in a job of its own.
 Because `dbt_build` is an unconditional DAG task, every Airflow worker must
 install `requirements.txt`, `requirements-dbt.txt` and
 `requirements-airflow.txt`; CI verifies that combined environment against
-Airflow 3.3.1, audits the installed worker dependencies, and then executes the
+Airflow 3.3.2, audits the installed worker dependencies, and then executes the
 DAG end to end with `dag.test()` against a fixture feed -- `tests/test_dag_run.py`
 runs all twelve tasks, dbt included, and asserts on the artefacts they leave on
 disk. Parsing was the previous bar, and it could not have caught a stage the DAG
