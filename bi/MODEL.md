@@ -241,7 +241,7 @@ Rebuild the pipeline and model CSVs before refreshing Power BI. Load the new
 `fact_sales[ReversedByCredit]` column as True/False, then add the two measures in
 `measures.dax`. `Revenue` remains gross; `Revenue Net of Matched Cancellations`
 filters out flagged lines and `Matched Cancellation Revenue` selects them.
-Unfiltered validation: £9,859,031.12 net + £388,322.16 matched = £10,247,353.28
+Unfiltered validation: £9,861,394.40 net + £385,958.88 matched = £10,247,353.28
 gross. Existing report screenshots show gross measures; these new DAX measures
 have not been executed in Power BI Desktop. The generated CSV values and dbt
 counterparts were validated locally.
