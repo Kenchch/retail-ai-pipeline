@@ -5,6 +5,11 @@ it into a **Power BI semantic model**: surrogate keys, an unknown member, a
 calendar that supports time intelligence, a second fact table for data quality,
 a many-to-many bridge, a 37-measure DAX library and dynamic row-level security.
 
+**Source.** The model is built from CSVs that `build_star_schema.py` exports
+from the published Parquet files (`data/runs/<run_id>/*.parquet`, resolved
+through `published/CURRENT.json`). It reads neither the SQLite database nor
+the dbt DuckDB marts.
+
 Two fact tables on conformed dimensions, so one set of slicers answers both
 *what sold* and *what we rejected and why*.
 
