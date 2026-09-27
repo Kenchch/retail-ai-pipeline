@@ -18,7 +18,7 @@ rules. Failing rows go to a quarantine table with the rules they broke instead
 of being dropped. Clean rows become a star schema, written to a per-run version
 and published by replacing one pointer, so a failed run never overwrites a good
 one. dbt then builds contracted DuckDB marts from the published version, and
-Power BI reads the star schema.
+the Power BI model is built from CSVs exported from its Parquet files.
 
 **Result.** 19,343 lines (3.6%) quarantined, each with a stated reason; loaded
 plus quarantined equals the source row count. Recommendations reach a 56.3%
@@ -50,9 +50,9 @@ flowchart LR
     src["UCI CSV<br/>SHA-256 pinned"] --> gate
     gate -.->|reject rate over limit| stop["run fails;<br/>last good version stays live"]
     pub --> wh[("versioned warehouse<br/>SQLite + Parquet")]
-    wh --> dbt
+    wh -->|Parquet| dbt
     dbt -->|"all tests pass:<br/>second pointer swap"| mart[("DuckDB marts")]
-    wh --> pbi["Power BI model"]
+    wh -->|"Parquet, exported<br/>to CSV"| pbi["Power BI model"]
 ```
 
 ## Results and evidence
@@ -122,8 +122,15 @@ constraints. See [runtime and orchestration details](docs/DESIGN.md#how-it-works
 
 ## Limits
 
-- Publication uses a single machine and local storage.
+What the project is now.
+
+- Staging, the SQLite warehouse and the DuckDB marts are files on one host, and
+  publication relies on renames on that host.
 - Warehouse and downstream dbt promotion are separate transaction boundaries.
+- Every run rebuilds the whole extract; nothing is loaded incrementally.
+- The quality gate checks the reject rate, not the volume. The DAG emails on a
+  failed task, but a run that never starts sends nothing.
+- A missing source column fails the extract; a new or redefined one passes.
 - Gross and exact-match-net revenue are separate; neither estimates unmatched refunds.
 - Offline associations do not establish recommendation impact or causal uplift.
 - Adoption metrics use generated telemetry, not real users.
@@ -131,30 +138,25 @@ constraints. See [runtime and orchestration details](docs/DESIGN.md#how-it-works
 
 ## What this would need in production
 
-Not built here; listed so the gaps are explicit.
+What is missing, against the limits above. Not built here.
 
-- **Freshness and volume alerts.** The DAG emails on a failed task, but a run
-  that never starts sends nothing, and the quality gate checks the reject rate,
-  not the volume. It needs an Airflow deadline alert on the DAG and a row-count
-  check against the trailing seven-day median, so a half-empty extract fails
-  instead of loading cleanly.
-- **Incremental loads and backfill.** Every run rebuilds the whole extract,
-  which suits one static year and not a daily feed. A live source needs loads
-  partitioned by invoice date and a backfill command keyed on it.
-- **A source contract.** The extract fails on a missing column, but a new column
-  or a changed meaning passes. A real source needs a versioned contract agreed
-  with its owner, and a migration path when it changes.
-- **Shared storage.** Staging, the SQLite warehouse and the DuckDB marts are
-  files on one host. A team needs object storage and a served warehouse, which
-  is a rewrite of `load()`, not a new connection string
-  ([design notes](docs/DESIGN.md#stack)).
-- **Real usage data.** Adoption metrics run on simulated telemetry. The
-  production sources (Power BI usage metrics, merchandising audit log, feedback
-  button) are named in `scripts/get_data.py`, and wiring one in is the step
-  that makes the adoption report mean anything.
-- **Less orchestration.** At this volume Airflow and its database cost more to
-  run than they save. Cron running the pipeline and then dbt would do until
-  there are several jobs that depend on each other.
+- **Freshness and volume alerts.** An Airflow deadline alert on the DAG, and a
+  row-count check against the trailing seven-day median, so a half-empty
+  extract fails instead of loading cleanly.
+- **Incremental loads and backfill.** Loads partitioned by invoice date, and a
+  backfill command keyed on it.
+- **A source contract.** A versioned contract agreed with the source's owner,
+  and a migration path for when it changes.
+- **Shared storage.** Object storage for staging and a served warehouse, so the
+  pipeline and its readers can run on different hosts. That is a rewrite of
+  `load()`, not a new connection string ([design notes](docs/DESIGN.md#stack)).
+- **Real usage data.** One of the production sources named in
+  `scripts/get_data.py` (Power BI usage metrics, the merchandising audit log,
+  the feedback button) wired in; until then the adoption report measures
+  nothing real.
+- **Less orchestration.** Cron running the pipeline and then dbt, until there
+  are several jobs that depend on each other. At this volume Airflow and its
+  database cost more to run than they save.
 
 ## Data and licence
 
