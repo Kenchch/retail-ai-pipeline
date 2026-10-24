@@ -17,9 +17,7 @@ exists to satisfy.
 
 from __future__ import annotations
 
-import csv
-import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -28,138 +26,10 @@ pytest.importorskip("airflow")
 
 ROOT = Path(__file__).resolve().parents[1]
 
-RETAIL_HEADER = [
-    "InvoiceNo",
-    "StockCode",
-    "Description",
-    "Quantity",
-    "InvoiceDate",
-    "UnitPrice",
-    "CustomerID",
-    "Country",
-]
 
-# Four products that co-occur, so the recommender has pairs to find rather than
-# a catalogue of singletons.
-PRODUCTS = [
-    ("85123A", "WHITE HANGING HEART T-LIGHT HOLDER", 2.55),
-    ("71053", "WHITE METAL LANTERN", 3.39),
-    ("84406B", "CREAM CUPID HEARTS COAT HANGER", 2.75),
-    ("22423", "REGENCY CAKESTAND 3 TIER", 12.75),
-]
-
-
-def _write_transactions(path: Path, baskets: int = 60) -> int:
-    """A small feed with real structure: repeat customers, multi-line baskets,
-    and one cancelled pair so the quality rules have something to act on."""
-    rows = []
-    start = datetime(2011, 1, 4, 9, 0)
-    for i in range(baskets):
-        invoice = f"5{40000 + i}"
-        customer = 17000 + (i % 12)
-        when = (start + timedelta(days=i % 28, minutes=i)).strftime("%m/%d/%Y %H:%M")
-        for code, desc, price in PRODUCTS[: 2 + (i % 3)]:
-            rows.append(
-                [
-                    invoice,
-                    code,
-                    desc,
-                    1 + (i % 6),
-                    when,
-                    price,
-                    customer,
-                    "United Kingdom",
-                ]
-            )
-
-    # One cancellation, and one line with a non-positive quantity: the gate has
-    # to quarantine both rather than load them.
-    rows.append(
-        [
-            "C560001",
-            "85123A",
-            PRODUCTS[0][1],
-            -3,
-            "01/20/2011 10:00",
-            2.55,
-            17001,
-            "United Kingdom",
-        ]
-    )
-    rows.append(
-        [
-            "560002",
-            "71053",
-            PRODUCTS[1][1],
-            0,
-            "01/20/2011 10:05",
-            3.39,
-            17002,
-            "United Kingdom",
-        ]
-    )
-
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(RETAIL_HEADER)
-        writer.writerows(rows)
-    return len(rows)
-
-
-def _write_usage_events(path: Path, roster: dict[str, int]) -> None:
-    """Telemetry for the adoption branch. Teams come from the roster, because the
-    report iterates the roster and a team that never appears must still show up
-    with a zero."""
-    rows = []
-    start = datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc)
-    for team_index, (team, seats) in enumerate(roster.items()):
-        for seat in range(min(seats, 6)):
-            user = f"{team[:3].lower()}{seat:02d}"
-            when = start + timedelta(days=team_index * 3 + seat)
-            rows.append(
-                [when.strftime("%Y-%m-%d %H:%M:%S"), user, team, "open_report", ""]
-            )
-            if seat % 2 == 0:
-                rows.append(
-                    [when.strftime("%Y-%m-%d %H:%M:%S"), user, team, "feedback", 4]
-                )
-
-    with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["event_ts", "user_id", "team", "event_type", "feedback_score"])
-        writer.writerows(rows)
-
-
-@pytest.fixture()
-def project(tmp_path):
-    """A complete project directory: the real config with its paths pointed at a
-    temporary root, and a fixture feed under it."""
-    import yaml
-
-    cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-    # The fixture is small and deliberately contains bad rows, so the configured
-    # ceiling -- tuned for the 3.57% the real extract produces -- would trip.
-    cfg["quality"]["max_quarantine_rate"] = 1.0
-    # Measure the adoption windows from the fixture's own events rather than the
-    # date pinned for the real extract.
-    cfg["adoption"].pop("analysis_as_of", None)
-
-    (tmp_path / "data" / "raw").mkdir(parents=True)
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
-
-    rows = _write_transactions(tmp_path / "data" / "raw" / "online_retail.csv")
-    _write_usage_events(
-        tmp_path / "data" / "raw" / "usage_events.csv", cfg["adoption"]["roster"]
-    )
-
-    # dbt is not stubbed: it builds the mart and runs its data tests against
-    # what this DAG publishes. It needs its own project, and `paths.dbt` in the
-    # copied config resolves to this one, so the build writes its mart database,
-    # its CURRENT.json and dbt's target/ and logs/ here rather than into the
-    # checkout the tests are running from.
-    shutil.copytree(ROOT / "dbt", tmp_path / "dbt", dirs_exist_ok=True)
-    return tmp_path, config_path, rows
+# The `project` fixture -- the real config pointed at a temporary root, a small
+# feed and a copy of the dbt project -- is in conftest.py, because
+# tests/test_dbt_wrapper.py runs dbt against it too, without Airflow.
 
 
 def _repository_dbt_state() -> dict[str, str]:
