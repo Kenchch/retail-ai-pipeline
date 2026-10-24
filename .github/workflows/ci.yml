@@ -151,6 +151,12 @@ jobs:
           cache: pip
 
       - name: Install
+        # bash on both legs. Under the Windows default, PowerShell, a failed
+        # command does not fail the step: the lock pins pip, the upgrade below
+        # installs a newer one, pip.exe refuses to replace itself on Windows,
+        # and that surfaced two steps later as "No module named 'pandas'".
+        # `python -m pip` is the form that may change pip's own version there.
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           # Same pinned set as the other two jobs. This job compares the
@@ -158,8 +164,8 @@ jobs:
           # them have to be the versions the lock names -- under a floating
           # requirements.txt, "the committed reports are reproducible" was a
           # claim about whichever resolution pip happened to reach that day.
-          pip install -r requirements.lock -r requirements-dbt.txt pip-audit
-          pip install -e . --no-deps
+          python -m pip install -r requirements.lock -r requirements-dbt.txt pip-audit
+          python -m pip install -e . --no-deps
 
       - name: Download the reference inputs
         run: python scripts/get_data.py
