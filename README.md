@@ -117,6 +117,15 @@ python scripts/run_dbt.py
 python scripts/check_cancellations.py
 ```
 
+`scripts/trace_pipeline.py` runs every stage, dbt, the Power BI build and the
+evaluation into `data/trace/<run_id>/`, logs how the data changes shape at each
+one (the log is written in Chinese), then checks that its reports match the
+committed ones and its tables match the published version (about a minute):
+
+```bash
+python scripts/trace_pipeline.py
+```
+
 Airflow additionally requires `requirements-airflow.txt` and its versioned release
 constraints. See [runtime and orchestration details](docs/DESIGN.md#how-it-works).
 
