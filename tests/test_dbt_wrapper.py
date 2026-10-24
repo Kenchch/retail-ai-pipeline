@@ -173,6 +173,39 @@ def test_open_reader_keeps_its_version_while_pointer_advances(tmp_path, monkeypa
         reader.close()
 
 
+def test_every_view_in_the_promoted_mart_can_be_queried(project, monkeypatch):
+    """Real dbt, real pipeline, fixture feed: then read every view back.
+
+    DuckDB names a database's catalog after its file, and the mart is built as
+    retail_candidate_<id>.duckdb and renamed on promotion. A view stores the
+    SQL it was created with, so a ref() compiled with the catalog in it left
+    `retail_candidate_<id>.analytics.stg_sales` inside int_sales_measures, and
+    in the promoted file that view failed with 'Catalog ... does not exist'.
+    The marts are tables and passed every data test, so the build never saw it.
+    """
+    try:
+        run_dbt._dbt_executable()
+    except FileNotFoundError:
+        pytest.skip("dbt is not installed")
+    from retail_pipeline.pipeline import run
+
+    tmp_path, config_path, _ = project
+    monkeypatch.setenv("RETAIL_CONFIG", str(config_path))
+    run(str(config_path))
+    assert run_dbt.main() == 0
+
+    root = tmp_path / "dbt"
+    mart = root / json.loads((root / "CURRENT.json").read_text())["database"]
+    assert not mart.name.startswith("retail_candidate_")
+    with duckdb.connect(str(mart), read_only=True) as connection:
+        views = connection.execute(
+            "SELECT schema_name, view_name FROM duckdb_views() WHERE NOT internal"
+        ).fetchall()
+        assert views, "the mart has no views, so this test checks nothing"
+        for schema, view in views:
+            connection.execute(f'SELECT count(*) FROM "{schema}"."{view}"').fetchone()
+
+
 def test_the_mart_goes_where_the_config_says_not_next_to_the_wrapper(
     tmp_path, monkeypatch
 ):
