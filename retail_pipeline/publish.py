@@ -202,7 +202,10 @@ def published_manifest(cfg: dict) -> dict | None:
         return None
     try:
         return json.loads(f.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        # Still None, as before, but a corrupt or unreadable manifest is not the
+        # same as no publish yet, and callers can only say the latter.
+        log.warning("Cannot read the published manifest %s: %s", f, exc)
         return None
 
 
@@ -480,7 +483,8 @@ def _stamped_run_id(db: Path) -> str | None:
             row = conn.execute(
                 "SELECT run_id FROM _publication WHERE id = 1"
             ).fetchone()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log.warning("Cannot read the run_id stamped in %s: %s", db, exc)
         return None
     return row[0] if row else None
 
