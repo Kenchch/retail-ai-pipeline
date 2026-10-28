@@ -64,12 +64,7 @@ from retail_pipeline.publish import published_reports as published_reports
 
 ROOT = Path(__file__).resolve().parents[1]
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-7s | %(message)s",
-    datefmt="%H:%M:%S",
-)
-log = logging.getLogger("pipeline")
+log = logging.getLogger(__name__)
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
@@ -810,6 +805,7 @@ def load(tables: dict[str, pd.DataFrame], cfg: dict, run_id: str | None = None) 
         # only something to delete. That is the difference a version directory
         # makes: the failure path used to have to unpick a half-finished
         # publish out of the directory consumers were reading.
+        log.error("Load of %s failed; discarding data version %s", run_id, out.name)
         shutil.rmtree(out, ignore_errors=True)
         raise
 
@@ -926,10 +922,13 @@ def run(config_path: str | None = None) -> dict:
     # load() below.
     run_id = f"local_{datetime.now(timezone.utc):%Y%m%dT%H%M%S%f}"
     version = reports_dir(cfg, run_id)
+    stage = "setup"
     try:
-        log.info("--- 1/5 extract")
+        stage = "1/5 extract"
+        log.info("--- %s", stage)
         raw = extract(cfg)
-        log.info("--- 2/5 data quality")
+        stage = "2/5 data quality"
+        log.info("--- %s", stage)
         clean, quarantine, results = check_quality(
             raw, cfg, reports_dest=version, run_id=run_id
         )
@@ -942,11 +941,14 @@ def run(config_path: str | None = None) -> dict:
             dest=version,
             run_id=run_id,
         )
-        log.info("--- 3/5 transform")
+        stage = "3/5 transform"
+        log.info("--- %s", stage)
         tables = transform(clean)
-        log.info("--- 4/5 recommend")
+        stage = "4/5 recommend"
+        log.info("--- %s", stage)
         recs = recommend(tables, cfg)
-        log.info("--- 5/5 adoption")
+        stage = "5/5 adoption"
+        log.info("--- %s", stage)
         adoption = measure_adoption(cfg, reports_dest=version, run_id=run_id)
 
         # The last file of the version, and still BEFORE load(). This used to
@@ -960,6 +962,7 @@ def run(config_path: str | None = None) -> dict:
         # and the input digests all exist already. So the rule is simply that
         # the version is complete before the data moves, which is the same
         # order the DAG runs its tasks in.
+        stage = "run metrics"
         metrics = write_run_metrics(
             cfg,
             n_raw=len(raw),
@@ -973,6 +976,7 @@ def run(config_path: str | None = None) -> dict:
             run_id=run_id,
         )
 
+        stage = "load"
         load(
             {**tables, "quarantine": quarantine, "recommendations": recs, **adoption},
             cfg,
@@ -984,6 +988,12 @@ def run(config_path: str | None = None) -> dict:
         # that never published.
         mark_published(cfg, run_id)
     except BaseException:
+        log.exception(
+            "Run %s failed at %s after %.1fs; reports parked in failed_runs",
+            run_id,
+            stage,
+            time.perf_counter() - started,
+        )
         # Whatever was computed before the failure is still worth reading, so
         # the version is parked under reports/failed_runs/ - it never becomes
         # something CURRENT can name. finalize_reports rather than
@@ -1008,5 +1018,30 @@ def run(config_path: str | None = None) -> dict:
     return metrics
 
 
+def configure_logging(level: int = logging.INFO) -> None:
+    """Console logging for `python -m retail_pipeline.pipeline`.
+
+    Only the command line calls this. Nothing is configured on import, so the
+    Airflow worker, pytest and scripts/trace_pipeline.py keep their own
+    handlers. It goes on the package's logger, not the root, because
+    basicConfig does nothing once something has configured the root. Times are
+    UTC with the date, like the run ids, so a line matches a run and Airflow's
+    own logs.
+    """
+    package = logging.getLogger("retail_pipeline")
+    if not any(getattr(h, "_retail_console", False) for h in package.handlers):
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+            "%Y-%m-%dT%H:%M:%SZ",
+        )
+        formatter.converter = time.gmtime
+        handler.setFormatter(formatter)
+        handler._retail_console = True
+        package.addHandler(handler)
+    package.setLevel(level)
+
+
 if __name__ == "__main__":
+    configure_logging()
     run()
