@@ -53,7 +53,7 @@ from retail_pipeline.pipeline import (
 from retail_pipeline.recommend import recommend
 from scripts.run_dbt import main as run_dbt
 
-log = logging.getLogger("pipeline")
+log = logging.getLogger(__name__)
 
 STAGING_RETENTION_DAYS = 7
 

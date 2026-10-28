@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pandas as pd
 
-log = logging.getLogger("pipeline")
+log = logging.getLogger(__name__)
 
 
 def load_events(cfg: dict) -> pd.DataFrame:

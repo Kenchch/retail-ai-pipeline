@@ -81,10 +81,10 @@ def setup(out):
     for h in handlers:
         h.setFormatter(fmt)
         h.addFilter(_mark)
-    # The stages log through "pipeline". Sending it to the same handlers puts
-    # what each stage reported into the trace, marked and in order; without
-    # propagate=False, pipeline.py's basicConfig would print it a second time.
-    for name in ("trace", "pipeline"):
+    # The stages log through children of "retail_pipeline". Sending it to the
+    # same handlers puts what each stage reported into the trace, marked and in
+    # order; propagate=False keeps a configured root from printing it twice.
+    for name in ("trace", "retail_pipeline"):
         logger = logging.getLogger(name)
         logger.setLevel(logging.INFO)
         logger.propagate = False

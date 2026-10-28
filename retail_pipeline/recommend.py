@@ -45,7 +45,7 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 
-log = logging.getLogger("pipeline")
+log = logging.getLogger(__name__)
 
 # An empty result is still a table with these columns. A zero-column DataFrame
 # is not "no recommendations", it is a shape no consumer can read.

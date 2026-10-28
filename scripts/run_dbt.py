@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -15,13 +16,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from retail_pipeline.pipeline import load_config
+from retail_pipeline.pipeline import configure_logging, load_config
 from retail_pipeline.publish import (
     WAREHOUSE_FILE,
     _atomic_write_text,
     contained,
     published_manifest,
 )
+
+# Under the package's logger rather than __name__, which is "__main__" from the
+# command line and "scripts.run_dbt" in the DAG: this way configure_logging()
+# and scripts/trace_pipeline.py pick it up like every other stage.
+log = logging.getLogger("retail_pipeline.run_dbt")
 
 
 def _sql_literal_content(value: str) -> str:
@@ -81,10 +87,11 @@ def _prune_mart_versions(root: Path, current: Path, keep: int = 3) -> None:
         try:
             version.unlink()
             Path(str(version) + ".wal").unlink(missing_ok=True)
+            log.info("Pruned dbt mart %s", version.name)
         except PermissionError:
             # A Windows BI reader may still own an older version. It is safe to
             # retain because CURRENT.json no longer sends new readers to it.
-            pass
+            log.info("Kept dbt mart %s: still open", version.name)
 
 
 def main(expected_run_id: str | None = None) -> int:
@@ -138,6 +145,7 @@ def main(expected_run_id: str | None = None) -> int:
     candidate.unlink()  # DuckDB creates a fresh database at this unique path.
     env["RETAIL_DBT_PATH"] = candidate.as_posix()
 
+    log.info("dbt build for run %s into %s", published_run_id, candidate.name)
     try:
         subprocess.run(
             [
@@ -158,6 +166,12 @@ def main(expected_run_id: str | None = None) -> int:
         if current_manifest is None or _identity(current_manifest) != _identity(
             manifest
         ):
+            log.warning(
+                "Published manifest changed during the dbt build of %s; "
+                "not promoting %s",
+                published_run_id,
+                candidate.name,
+            )
             raise SystemExit(
                 "published manifest changed during dbt build; refusing to promote"
             )
@@ -180,6 +194,7 @@ def main(expected_run_id: str | None = None) -> int:
         except BaseException:
             version.unlink(missing_ok=True)
             raise
+        log.info("dbt mart for run %s is now %s", published_run_id, version.name)
         _prune_mart_versions(mart_root, version)
     finally:
         candidate.unlink(missing_ok=True)
@@ -188,4 +203,5 @@ def main(expected_run_id: str | None = None) -> int:
 
 
 if __name__ == "__main__":
+    configure_logging()
     raise SystemExit(main())

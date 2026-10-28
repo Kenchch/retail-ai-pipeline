@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-log = logging.getLogger("pipeline")
+log = logging.getLogger(__name__)
 
 __all__ = [
     "MANIFEST_FILE",
