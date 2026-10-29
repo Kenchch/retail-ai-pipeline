@@ -73,7 +73,9 @@ def setup(out):
     if hasattr(sys.stdout, "reconfigure"):  # a cp1252 console cannot print the log
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     out.mkdir(parents=True)
-    fmt = logging.Formatter("%(asctime)s  %(mark)s%(message)s", "%H:%M:%S")
+    # UTC with the date, like the run id and the pipeline's own log lines.
+    fmt = logging.Formatter("%(asctime)s  %(mark)s%(message)s", "%Y-%m-%dT%H:%M:%SZ")
+    fmt.converter = time.gmtime
     handlers = (
         logging.FileHandler(out / "trace.log", encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
@@ -821,6 +823,16 @@ def main():
     log.info(f"trace run {run_id}; 所有输出写在 {out}")
 
     t0 = time.perf_counter()
+    try:
+        _run(out, run_id, t0)
+    except BaseException:
+        # Into trace.log as well as onto the screen: the last header above this
+        # line is the step that failed.
+        log.exception(f"trace 失败, 用时 {time.perf_counter() - t0:,.0f} s")
+        raise
+
+
+def _run(out, run_id, t0):
     cfg = make_project(out)
     step_config(cfg)
     version = publish.reports_dir(cfg, run_id)
