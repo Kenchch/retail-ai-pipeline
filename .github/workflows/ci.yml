@@ -202,5 +202,14 @@ jobs:
       - name: Test the dbt wrapper
         run: pytest -q tests/test_dbt_wrapper.py
 
+      # Nothing else runs the trace, so a change that breaks it would otherwise
+      # pass CI. It builds its own project under data/trace/ (ignored), dbt
+      # included, so it goes after the report check and cannot affect it. It
+      # logs mismatches rather than failing on them; check_committed_reports
+      # is what fails on those. About a minute, on both legs because the trace
+      # is run on Windows.
+      - name: The pipeline trace runs end to end
+        run: python scripts/trace_pipeline.py
+
       - name: Audit dbt dependencies
         run: pip-audit -r requirements-dbt.txt --strict
