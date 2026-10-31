@@ -104,10 +104,12 @@ def header(n, total, name, module, what):
 def frame(label, df, sample=3, max_cols=10):
     """Shape, memory, per-column dtype / nulls / range, and a few rows."""
     mem = df.memory_usage(deep=True).sum() / 2**20
-    log.info(f"  {label}: {len(df):,} 行 x {df.shape[1]} 列, 内存 {mem:,.1f} MB")
+    log.info(
+        f"  {label}: {len(df):,} rows x {df.shape[1]} columns, {mem:,.1f} MB in memory"
+    )
     for c in df.columns:
         col = df[c]
-        info = f"{str(col.dtype):<22} 空值 {int(col.isna().sum()):>8,}"
+        info = f"{str(col.dtype):<22} nulls {int(col.isna().sum()):>8,}"
         if pd.api.types.is_bool_dtype(col):
             info += f"  True {int(col.fillna(False).sum()):,}"
         elif pd.api.types.is_numeric_dtype(col) or pd.api.types.is_datetime64_any_dtype(
@@ -119,17 +121,17 @@ def frame(label, df, sample=3, max_cols=10):
                     lo, hi = int(lo), int(hi)
                 elif pd.api.types.is_numeric_dtype(col):
                     lo, hi = f"{lo:,.4g}", f"{hi:,.4g}"
-                info += f"  范围 [{lo}, {hi}]"
+                info += f"  range [{lo}, {hi}]"
         else:
-            info += f"  {col.nunique():,} 种取值"
+            info += f"  {col.nunique():,} distinct values"
         log.info(f"      {str(c):<24} {info}")
     shown = list(df.columns[:max_cols])
     extra = (
-        f"  (另有 {df.shape[1] - len(shown)} 列未显示)"
+        f"  ({df.shape[1] - len(shown)} columns not shown)"
         if df.shape[1] > max_cols
         else ""
     )
-    log.info(f"      前 {sample} 行{extra}:")
+    log.info(f"      first {sample} rows{extra}:")
     log.info(
         textwrap.indent(df[shown].head(sample).to_string(max_colwidth=22), "      | ")
     )
@@ -141,7 +143,7 @@ def table(df):
 
 
 def change(text):
-    log.info(f"  -> 变化: {text}")
+    log.info(f"  -> what changed: {text}")
 
 
 def record(step, module, inp, out, rows, what):
@@ -160,7 +162,7 @@ def record(step, module, inp, out, rows, what):
 def timed(fn, *args, **kw):
     t0 = time.perf_counter()
     result = fn(*args, **kw)
-    log.info(f"  耗时 {time.perf_counter() - t0:,.1f} s")
+    log.info(f"  took {time.perf_counter() - t0:,.1f} s")
     return result
 
 
@@ -210,7 +212,7 @@ def step_config(cfg):
         TOTAL,
         "config",
         "config.yaml",
-        "所有阶段共用的参数; 输出路径已指向 trace 目录",
+        "parameters every stage shares; output paths point into the trace directory",
     )
     for k, v in cfg["paths"].items():
         log.info(f"  paths.{k:<14} {v}")
@@ -220,31 +222,39 @@ def step_config(cfg):
 
 
 def step_extract(cfg):
-    header(1, TOTAL, "extract", "pipeline.py", "读 CSV, 统一列名和类型, 一行不删")
+    header(
+        1,
+        TOTAL,
+        "extract",
+        "pipeline.py",
+        "read the CSV, standardise column names and types, drop no rows",
+    )
     path = cfg["paths"]["raw"]
     src = pd.read_csv(path, dtype=str)
-    frame(f"原始 {path.name} (全部按字符串读)", src)
+    frame(f"raw {path.name} (every column read as a string)", src)
     raw = timed(pipeline.extract, cfg)
-    frame("extract() 输出", raw)
+    frame("extract() output", raw)
     code = src["StockCode"]
     renamed = code.notna() & (code.str.strip().str.upper() != code)
     log.info(
-        f"  时间解析失败 (-> NaT) {int(raw.invoice_ts.isna().sum()):,} 行; "
-        f"customer_id 为空 {int(raw.customer_id.isna().sum()):,} 行; "
-        f"stock_code 去空格转大写后改变 {int(renamed.sum()):,} 行"
+        "  timestamps that failed to parse (-> NaT): "
+        f"{int(raw.invoice_ts.isna().sum()):,} rows; "
+        f"customer_id empty: {int(raw.customer_id.isna().sum()):,} rows; "
+        f"stock_code changed by trimming and upper-casing: {int(renamed.sum()):,} rows"
     )
     change(
-        f"{len(src):,} 行原样保留。列按 column_map 改名; invoice_ts 字符串 -> "
-        "datetime64; quantity / unit_price -> 数值; customer_id -> Int64 (可空整数); "
-        "invoice_no / stock_code / description 成为 string 类型"
+        f"all {len(src):,} rows kept as they are. Columns renamed by column_map; "
+        "invoice_ts string -> datetime64; quantity / unit_price -> numeric; "
+        "customer_id -> Int64 (nullable integer); invoice_no / stock_code / "
+        "description become the string dtype"
     )
     record(
         "extract",
         "pipeline.py",
-        f"{path.name} {len(src):,} 行 x {src.shape[1]} 列",
-        f"raw {len(raw):,} 行 x {raw.shape[1]} 列",
-        "x1 (不删行)",
-        "列改名; 字符串 -> 时间 / 数值 / Int64; stock_code 规范化",
+        f"{path.name}, {len(src):,} rows x {src.shape[1]} columns",
+        f"raw, {len(raw):,} rows x {raw.shape[1]} columns",
+        "x1 (no rows dropped)",
+        "columns renamed; strings -> datetime / numeric / Int64; stock_code normalised",
     )
     return raw
 
@@ -255,7 +265,8 @@ def step_quality(cfg, raw, version, run_id):
         TOTAL,
         "data_quality_gate",
         "pipeline.py + credits.py",
-        f"{len(pipeline.CHECKS)} 条规则, 阻断的隔离不删除; 退货单配对只打标记",
+        f"{len(pipeline.CHECKS)} rules; blocking ones quarantine rows rather than "
+        "drop them; credit-note matches are only flagged",
     )
     clean, quarantine, results = timed(
         pipeline.check_quality, raw, cfg, reports_dest=version, run_id=run_id
@@ -269,80 +280,92 @@ def step_quality(cfg, raw, version, run_id):
         dest=version,
         run_id=run_id,
     )
-    log.info("  每条规则的结果 (一行可以违反多条, 所以不能相加):")
+    log.info("  result per rule (a row can break several, so these do not add up):")
     table(results.drop(columns="why"))
-    frame("clean (通过全部阻断规则)", clean, max_cols=13)
-    frame("quarantine (多一列 reasons)", quarantine)
+    frame("clean (passed every blocking rule)", clean, max_cols=13)
+    frame("quarantine (one extra column: reasons)", quarantine)
     multi = int(quarantine.reasons.str.contains(",").sum())
     log.info(
-        f"  隔离原因 (前 6 种组合): {quarantine.reasons.value_counts().head(6).to_dict()}; "
-        f"同时违反多条的 {multi:,} 行"
+        "  quarantine reasons (top 6 combinations): "
+        f"{quarantine.reasons.value_counts().head(6).to_dict()}; "
+        f"{multi:,} rows break more than one rule"
     )
     rate, ceiling = len(quarantine) / len(raw), cfg["quality"]["max_quarantine_rate"]
     log.info(
-        f"  闸门: 隔离率 {rate:.2%} vs 上限 {ceiling:.0%} -> "
-        f"{'通过' if rate <= ceiling else '失败'}"
+        f"  gate: quarantine rate {rate:.2%} vs ceiling {ceiling:.0%} -> "
+        f"{'passed' if rate <= ceiling else 'FAILED'}"
     )
     total = len(clean) + len(quarantine)
     log.info(
-        f"  核对: clean {len(clean):,} + quarantine {len(quarantine):,} = {total:,} "
-        f"vs raw {len(raw):,} -> {'一致' if total == len(raw) else '不一致'}"
+        f"  check: clean {len(clean):,} + quarantine {len(quarantine):,} = {total:,} "
+        f"vs raw {len(raw):,} -> {'adds up' if total == len(raw) else 'DOES NOT ADD UP'}"
     )
     flagged = clean[clean.reversed_by_credit]
     log.info(
-        f"  退货单配对: {len(flagged):,} 行销售被 "
-        f"{flagged.matched_credit_invoice.nunique():,} 张退货单冲掉, 金额 GBP "
-        f"{(flagged.quantity * flagged.unit_price).sum():,.2f}; 仍在 clean 里, 只打标记"
+        f"  credit matching: {len(flagged):,} sales lines reversed by "
+        f"{flagged.matched_credit_invoice.nunique():,} credit notes, worth GBP "
+        f"{(flagged.quantity * flagged.unit_price).sum():,.2f}; still in clean, "
+        "only flagged"
     )
     log.info(
-        f"  不阻断的规则: clean 里没有 customer_id 的 "
-        f"{int(clean.customer_id.isna().sum()):,} 行 (游客结账) 照样进入后面的步骤"
+        f"  non-blocking rule: the {int(clean.customer_id.isna().sum()):,} clean rows "
+        "with no customer_id (guest checkouts) go on to the later steps all the same"
     )
     change(
-        f"{len(raw):,} 行分成 clean {len(clean):,} + quarantine {len(quarantine):,}。"
-        "clean 多两列 (reversed_by_credit, matched_credit_invoice): 被退货单冲掉的销售"
-        "只标记不删; quarantine 多一列 reasons, 记下违反的阻断规则"
+        f"{len(raw):,} rows split into clean {len(clean):,} + quarantine "
+        f"{len(quarantine):,}. clean gains two columns (reversed_by_credit, "
+        "matched_credit_invoice): sales reversed by a credit note are flagged, not "
+        "dropped; quarantine gains one, reasons, naming the blocking rules a row broke"
     )
     record(
         "data_quality_gate",
         "pipeline.py + credits.py",
-        f"raw {len(raw):,} 行",
-        f"clean {len(clean):,} 行, quarantine {len(quarantine):,} 行",
-        f"隔离 {rate:.2%}",
-        f"{len(pipeline.CHECKS)} 条规则; 隔离不删除; 退货单配对打标记",
+        f"raw, {len(raw):,} rows",
+        f"clean {len(clean):,} rows, quarantine {len(quarantine):,} rows",
+        f"{rate:.2%} quarantined",
+        f"{len(pipeline.CHECKS)} rules; quarantined, not dropped; credit matches flagged",
     )
     return clean, quarantine
 
 
 def step_transform(clean):
-    header(3, TOTAL, "transform", "pipeline.py", "星型模型: 1 张事实表 + 3 张维度表")
+    header(
+        3,
+        TOTAL,
+        "transform",
+        "pipeline.py",
+        "star schema: 1 fact table + 3 dimension tables",
+    )
     tables = timed(pipeline.transform, clean)
     for name, df in tables.items():
         frame(name, df, max_cols=11)
     fact, dim_date = tables["fact_sales"], tables["dim_date"]
     closed = dim_date.loc[~dim_date.has_sales, "day_of_week"].value_counts().to_dict()
     log.info(
-        f"  核对: fact_sales {len(fact):,} 行 vs clean {len(clean):,} 行 -> "
-        f"{'一致' if len(fact) == len(clean) else '不一致'}; 收入合计 GBP "
-        f"{fact.revenue.sum():,.2f}; 游客行 {int(fact.customer_id.isna().sum()):,}"
+        f"  check: fact_sales {len(fact):,} rows vs clean {len(clean):,} rows -> "
+        f"{'matches' if len(fact) == len(clean) else 'DOES NOT MATCH'}; revenue total "
+        f"GBP {fact.revenue.sum():,.2f}; guest rows "
+        f"{int(fact.customer_id.isna().sum()):,}"
     )
     log.info(
-        f"  dim_date 是 {len(dim_date):,} 天的连续日历, 没有交易的 "
-        f"{int((~dim_date.has_sales).sum())} 天: {closed}"
+        f"  dim_date is an unbroken calendar of {len(dim_date):,} days; the "
+        f"{int((~dim_date.has_sales).sum())} days with no sales, by weekday: {closed}"
     )
     change(
-        "一张交易表拆成 1 事实 + 3 维度。fact_sales 仍是一行一个销售行, 新增 date_key 和 "
-        "revenue = quantity x unit_price, description 移出; dim_product 按 stock_code "
-        "汇总, 描述取最常用的那个; dim_customer 只含有 ID 的顾客; dim_date 是连续日历, "
-        "没交易的日子也有一行"
+        "one transaction table split into 1 fact + 3 dimensions. fact_sales is still "
+        "one row per sales line, gains date_key and revenue = quantity x unit_price, "
+        "and loses description; dim_product is grouped by stock_code and keeps its "
+        "most common description; dim_customer holds only customers with an ID; "
+        "dim_date is an unbroken calendar, with a row for days without sales too"
     )
     record(
         "transform",
         "pipeline.py",
-        f"clean {len(clean):,} 行",
+        f"clean, {len(clean):,} rows",
         ", ".join(f"{n} {len(df):,}" for n, df in tables.items()),
-        "1 -> 4 张表",
-        "加 date_key, revenue; 描述移到维度; 维度按键汇总; 连续日历",
+        "1 -> 4 tables",
+        "date_key and revenue added; description moved to a dimension; "
+        "dimensions grouped by key; unbroken calendar",
     )
     return tables
 
@@ -353,47 +376,59 @@ def step_recommend(cfg, tables):
         TOTAL,
         "build_recommendations",
         "recommend.py",
-        "共购规则 (按 lift 排序) + 冷门商品用描述 TF-IDF 补位",
+        "co-purchase rules (ranked by lift), description TF-IDF for cold-start "
+        "products",
     )
     fact, products, c = tables["fact_sales"], tables["dim_product"], cfg["recommend"]
     sizes = fact.groupby("invoice_no")["stock_code"].nunique()
     cap = c["max_basket_size"]
     log.info(
-        f"  购物篮 (一张发票一个): {len(sizes):,} 个; 1 件 {int((sizes == 1).sum()):,}, "
-        f"2..{cap} 件 {int(sizes.between(2, cap).sum()):,} (只有这些参与配对), "
-        f"超过 {cap} 件 {int((sizes > cap).sum()):,}; 分母用全部购物篮"
+        f"  baskets (one per invoice): {len(sizes):,}; 1 item "
+        f"{int((sizes == 1).sum()):,}, 2..{cap} items "
+        f"{int(sizes.between(2, cap).sum()):,} (only these are paired), more than "
+        f"{cap} items {int((sizes > cap).sum()):,}; the denominator is every basket"
     )
     top = timed(co_purchase_rules, fact, cfg)
     frame(
-        f"co_purchase_rules(): 至少 {c['min_support_count']} 个篮子, confidence >= "
-        f"{c['min_confidence']}, lift >= {c['min_lift']}, 每个商品取前 {c['top_n']}",
+        f"co_purchase_rules(): at least {c['min_support_count']} baskets, "
+        f"confidence >= {c['min_confidence']}, lift >= {c['min_lift']}, "
+        f"top {c['top_n']} per product",
         top,
     )
     cold = timed(content_fallback, products, set(top.stock_code), cfg)
     usable = int((products.description != "UNKNOWN").sum())
-    frame(f"content_fallback(): 有描述的 {usable:,} 个商品里没有共购规则的", cold)
-    log.info("  recommend() 内部再算一遍上面两步, 所以下面的 [pipeline] 行会重复:")
+    frame(
+        f"content_fallback(): of the {usable:,} products with a description, "
+        "those without co-purchase rules",
+        cold,
+    )
+    log.info(
+        "  recommend() runs both steps above again itself, so the "
+        "[retail_pipeline.recommend] lines below repeat:"
+    )
     recs = timed(recommend, tables, cfg)
-    frame("recommend() 合并, 加上两边的商品名", recs)
+    frame("recommend(): both merged, with the product names on each side", recs)
     by_method = recs.groupby("method").stock_code.nunique().to_dict()
     covered = recs.stock_code.nunique()
     log.info(
-        f"  每种方法覆盖的商品数 {by_method}; 覆盖目录 {covered / len(products):.1%} "
-        f"({covered:,} / {len(products):,})"
+        f"  products covered per method {by_method}; catalogue coverage "
+        f"{covered / len(products):.1%} ({covered:,} / {len(products):,})"
     )
     change(
-        f"fact {len(fact):,} 行 -> {len(sizes):,} 个购物篮 (发票 -> 商品集合) -> 商品对"
-        f"计数 -> {top.stock_code.nunique():,} 个商品有共购规则; 其余 "
-        f"{cold.stock_code.nunique() if len(cold) else 0:,} 个用描述的余弦近邻补; "
-        f"合并成 {len(recs):,} 行, 每行一个 (商品, 推荐商品, 名次)"
+        f"fact {len(fact):,} rows -> {len(sizes):,} baskets (invoice -> set of "
+        f"products) -> pair counts -> {top.stock_code.nunique():,} products with "
+        "co-purchase rules; the other "
+        f"{cold.stock_code.nunique() if len(cold) else 0:,} filled in by cosine "
+        f"neighbours on description; merged into {len(recs):,} rows, one per "
+        "(product, recommended product, rank)"
     )
     record(
         "build_recommendations",
         "recommend.py",
-        f"fact_sales {len(fact):,} 行 + dim_product {len(products):,} 行",
-        f"recommendations {len(recs):,} 行",
-        f"{len(sizes):,} 篮 -> {len(recs):,} 条推荐",
-        f"共购规则 + TF-IDF 补位; 覆盖 {covered / len(products):.1%}",
+        f"fact_sales {len(fact):,} rows + dim_product {len(products):,} rows",
+        f"recommendations {len(recs):,} rows",
+        f"{len(sizes):,} baskets -> {len(recs):,} recommendations",
+        f"co-purchase rules + TF-IDF fallback; coverage {covered / len(products):.1%}",
     )
     return recs
 
@@ -404,15 +439,15 @@ def step_adoption(cfg, version, run_id):
         TOTAL,
         "measure_adoption",
         "adoption.py",
-        "使用遥测 -> 覆盖率 / 激活率 / 行动率 / CSAT",
+        "usage telemetry -> reach / activation / action rate / CSAT",
     )
     events = load_events(cfg)
     frame(cfg["paths"]["usage_events"].name, events)
     as_of = resolve_as_of(events, cfg)
     eligible = eligible_events(events, as_of)
     log.info(
-        f"  as_of {as_of} (config 里 analysis_as_of 当天结束); 在它之前的事件 "
-        f"{len(eligible):,} / {len(events):,}; 类型 "
+        f"  as_of {as_of} (the end of the config's analysis_as_of day); events "
+        f"before it {len(eligible):,} / {len(events):,}; types "
         f"{eligible.event_type.value_counts().to_dict()}"
     )
     tables = timed(measure_adoption, cfg, reports_dest=version, run_id=run_id)
@@ -420,18 +455,19 @@ def step_adoption(cfg, version, run_id):
         frame(name, df, sample=min(len(df), 12), max_cols=12)
     weekly, teams = tables["adoption_weekly"], tables["adoption_by_team"]
     change(
-        f"{len(events):,} 条事件 (一行一次操作) -> 截到 as_of -> 三张汇总表: headline "
-        f"{len(tables['adoption_headline'])} 行 (指标, 目标, 状态), weekly {len(weekly)} "
-        f"行 (连续周历, 没人用的周也有一行), by_team {len(teams)} 行 (按花名册, "
-        "没有事件的团队也有一行)"
+        f"{len(events):,} events (one row per action) -> cut at as_of -> three "
+        f"summary tables: headline {len(tables['adoption_headline'])} rows (metric, "
+        f"target, status), weekly {len(weekly)} rows (an unbroken run of weeks, with "
+        f"a row for weeks nobody used it), by_team {len(teams)} rows (from the "
+        "roster, with a row for teams that have no events)"
     )
     record(
         "measure_adoption",
         "adoption.py",
-        f"usage_events {len(events):,} 行",
+        f"usage_events {len(events):,} rows",
         ", ".join(f"{n} {len(df)}" for n, df in tables.items()),
         f"{len(events):,} -> {sum(len(df) for df in tables.values())}",
-        "事件 -> 指标; 连续周历; 按花名册列团队",
+        "events -> metrics; unbroken weeks; teams listed from the roster",
     )
     return tables
 
@@ -444,7 +480,7 @@ def step_run_metrics(
         TOTAL,
         "write_run_metrics",
         "pipeline.py + doc_figures.py",
-        "报告版本的最后一个文件, 写在发布之前",
+        "the report version's last file, written before anything is published",
     )
     metrics = pipeline.write_run_metrics(
         cfg,
@@ -464,16 +500,18 @@ def step_run_metrics(
     figures = json.loads((version / "doc_figures.json").read_text(encoding="utf-8"))
     log.info(f"  doc_figures.json: {figures}")
     change(
-        "不产生新表。前面几步的行数、推荐覆盖率、采用率和两个输入文件的指纹写进 "
-        "run_metrics.json; 到这里报告版本才完整, 之后数据才允许发布"
+        "no new tables. The earlier steps' row counts, recommendation coverage, "
+        "adoption rates and the fingerprints of the two input files go into "
+        "run_metrics.json; only now is the report version complete, and only after "
+        "this may the data be published"
     )
     record(
         "write_run_metrics",
         "pipeline.py + doc_figures.py",
-        "前 5 步的结果",
+        "the results of the first 5 steps",
         "run_metrics.json, doc_figures.json",
         "-",
-        "计数 + 输入指纹; 报告完整后才发布数据",
+        "counts + input fingerprints; data published only once the reports are whole",
     )
 
 
@@ -483,7 +521,8 @@ def step_publish(cfg, tables, quarantine, recs, adoption, run_id):
         TOTAL,
         "publish",
         "pipeline.py + publish.py",
-        "唯一写仓库的一步: 一个版本目录, Parquet + SQLite, 最后换指针",
+        "the only step that writes the warehouse: one version directory, "
+        "Parquet + SQLite, then the pointer moves",
     )
     payload = {**tables, "quarantine": quarantine, "recommendations": recs, **adoption}
     timed(pipeline.load, payload, cfg, run_id=run_id)
@@ -505,32 +544,34 @@ def step_publish(cfg, tables, quarantine, recs, adoption, run_id):
         }
         stamp = conn.execute("SELECT run_id, published_at FROM _publication").fetchone()
     log.info(
-        f"  数据版本 {data.relative_to(cfg['paths']['data_runs'].parent)} (data/CURRENT 指向它):"
+        f"  data version {data.relative_to(cfg['paths']['data_runs'].parent)} "
+        "(data/CURRENT points to it):"
     )
     for name in sorted(payload):
         p = data / f"{name}.parquet"
         rows = pq.ParquetFile(p).metadata.num_rows
         ok = rows == counts.get(name) == len(payload[name])
         log.info(
-            f"      {name:<20} parquet {rows:>8,} 行 {p.stat().st_size / 2**20:>6,.1f} MB"
-            f" | sqlite {counts.get(name, 0):>8,} 行 | {'一致' if ok else '不一致'}"
+            f"      {name:<20} parquet {rows:>8,} rows {p.stat().st_size / 2**20:>6,.1f} MB"
+            f" | sqlite {counts.get(name, 0):>8,} rows | {'match' if ok else 'DO NOT MATCH'}"
         )
     log.info(
-        f"  retail.db {db.stat().st_size / 2**20:,.1f} MB; 另有元数据表 "
+        f"  retail.db {db.stat().st_size / 2**20:,.1f} MB; plus the metadata tables "
         f"{[n for n in names if n not in payload]}; _publication = {stamp}"
     )
     change(
-        f"{len(payload)} 张表在同一个版本目录里各写一份 Parquet 和 SQLite, SQLite 在一个事务"
-        "里换表, 再记下发布清单 (_published) 和 run_id 戳 (_publication); 校验通过后改 "
-        "data/CURRENT 这一个指针"
+        f"{len(payload)} tables, each written once as Parquet and once into SQLite in "
+        "the same version directory; SQLite swaps the tables in one transaction, then "
+        "records the publication list (_published) and the run_id stamp "
+        "(_publication); once those check out, the one pointer data/CURRENT moves"
     )
     record(
         "publish",
         "pipeline.py + publish.py",
-        f"{len(payload)} 张表 (内存)",
-        f"data/runs/{data.name}/: {len(payload)} 个 parquet + retail.db",
-        "不变",
-        "Parquet + SQLite 同一版本; 一个事务; 换指针",
+        f"{len(payload)} tables (in memory)",
+        f"data/runs/{data.name}/: {len(payload)} parquet files + retail.db",
+        "unchanged",
+        "Parquet + SQLite in one version; one transaction; the pointer moves",
     )
 
 
@@ -540,7 +581,7 @@ def step_finalize(cfg, run_id):
         TOTAL,
         "finalize_reports",
         "publish.py",
-        "报告版本设为当前, 和数据版本绑在一起",
+        "the report version becomes current, bound to the data version",
     )
     outcome = publish.finalize_reports(cfg, run_id)
     publish.prune_report_versions(cfg)
@@ -550,10 +591,12 @@ def step_finalize(cfg, run_id):
     )
     log.info(f"  published/CURRENT.json: {publish.published_manifest(cfg)}")
     for p in sorted(publish.published_reports(cfg).iterdir()):
-        log.info(f"      {p.name:<26} {p.stat().st_size:>8,} 字节")
+        log.info(f"      {p.name:<26} {p.stat().st_size:>8,} bytes")
     change(
-        "数据不动。reports/CURRENT 指向这一版报告 (并抄一份到 reports/ 顶层), "
-        "published/CURRENT.json 同时记下数据版本和报告版本, 下游 (dbt, Power BI) 只认它"
+        "the data is not touched. reports/CURRENT points to this report version (and "
+        "a copy goes to the top level of reports/); published/CURRENT.json records the "
+        "data version and the report version together, and downstream (dbt, Power BI) "
+        "reads only that"
     )
     record(
         "finalize_reports",
@@ -561,7 +604,7 @@ def step_finalize(cfg, run_id):
         f"reports/runs/{run_id}/",
         "published/CURRENT.json",
         "-",
-        "一个文件绑定数据版本和报告版本",
+        "one file binds the data version to the report version",
     )
 
 
@@ -571,13 +614,15 @@ def step_dbt(cfg, run_id, out):
         TOTAL,
         "dbt_build",
         "scripts/run_dbt.py + dbt/",
-        "从已发布的版本建 DuckDB mart, 跑数据测试",
+        "build the DuckDB marts from the published version and run the data tests",
     )
     try:
         run_dbt._dbt_executable()
     except FileNotFoundError:
-        log.info("  dbt 没装 (pip install -r requirements-dbt.txt), 跳过")
-        record("dbt_build", "scripts/run_dbt.py", "-", "-", "-", "跳过: dbt 未安装")
+        log.info(
+            "  dbt is not installed (pip install -r requirements-dbt.txt): skipped"
+        )
+        record("dbt_build", "scripts/run_dbt.py", "-", "-", "-", "skipped: no dbt")
         return
 
     real_run = subprocess.run
@@ -609,8 +654,8 @@ def step_dbt(cfg, run_id, out):
     done = next((ln for ln in reversed(lines) if "Done." in ln), "")
     models = sum("OK created" in ln for ln in lines)
     tests = sum(" PASS " in ln for ln in lines)
-    log.info(f"  dbt: {models} 个模型建成, {tests} 个测试通过; {done.strip()}")
-    log.info(f"  完整输出在 {out / 'dbt_build.log'}")
+    log.info(f"  dbt: {models} models built, {tests} tests passed; {done.strip()}")
+    log.info(f"  full output in {out / 'dbt_build.log'}")
 
     import duckdb
 
@@ -626,23 +671,27 @@ def step_dbt(cfg, run_id, out):
         ).fetchall()
         for schema, name, kind in objects:
             df = con.execute(f'SELECT * FROM "{schema}"."{name}"').df()
-            log.info(f"      {name:<24} {kind:<10} {len(df):>8,} 行 x {df.shape[1]} 列")
+            log.info(
+                f"      {name:<24} {kind:<10} {len(df):>8,} rows x {df.shape[1]} columns"
+            )
             if name.startswith("mart_"):
                 marts[name] = df
     for name, df in marts.items():
         frame(name, df, sample=2, max_cols=12)
     change(
-        "dbt 按 published/CURRENT.json 找到这次发布的 Parquet: staging 视图改名和选列 -> "
-        "intermediate 算度量 -> 4 张 mart 表 (按天 / 商品 / 顾客汇总, 推荐), 写进新的 "
-        "DuckDB 文件; 测试全过才改 dbt/CURRENT.json"
+        "dbt finds this publication's Parquet through published/CURRENT.json: "
+        "staging views rename and select columns -> intermediate computes the "
+        "measures -> 4 mart tables (by day / product / customer, and "
+        "recommendations), written into a new DuckDB file; dbt/CURRENT.json moves "
+        "only once every test passes"
     )
     record(
         "dbt_build",
         "scripts/run_dbt.py + dbt/",
-        "已发布的 Parquet + 报告",
+        "the published Parquet + reports",
         ", ".join(f"{n} {len(df):,}" for n, df in marts.items()),
-        "汇总",
-        f"{models} 个模型, {tests} 个测试",
+        "aggregated",
+        f"{models} models, {tests} tests",
     )
 
 
@@ -652,7 +701,8 @@ def step_bi(out, tables):
         TOTAL,
         "bi semantic model",
         "bi/build_star_schema.py",
-        "仓库星型 -> Power BI 语义模型: 代理键, 未知成员, 整年日历",
+        "warehouse star schema -> Power BI semantic model: surrogate keys, "
+        "unknown members, whole-year calendar",
     )
     model = out / "bi" / "model"
     real_out, build_star_schema.OUT = build_star_schema.OUT, model
@@ -662,36 +712,47 @@ def step_bi(out, tables):
             timed(build_star_schema.main)
     finally:
         build_star_schema.OUT = real_out
-    log.info("  build_star_schema 自己的输出:")
+    log.info("  build_star_schema's own output:")
     log.info(textwrap.indent(printed.getvalue().strip(), "      | ", lambda _: True))
     built = {p.stem: pd.read_csv(p) for p in sorted(model.glob("*.csv"))}
     for name, df in built.items():
         frame(f"{name}.csv", df, sample=2, max_cols=12)
     log.info(
-        f"  对照仓库: fact_sales {len(tables['fact_sales']):,} -> "
-        f"{len(built['fact_sales']):,} 行; dim_customer {len(tables['dim_customer']):,} "
-        f"-> {len(built['dim_customer']):,} (加 -1 Guest); dim_product "
-        f"{len(tables['dim_product']):,} -> {len(built['dim_product']):,} (加 -1 "
-        f"Non-product, 隔离表里不是商品的代码都归到它); dim_date {len(tables['dim_date']):,} -> "
-        f"{len(built['dim_date']):,} 天 (补成整年)"
+        f"  against the warehouse: fact_sales {len(tables['fact_sales']):,} -> "
+        f"{len(built['fact_sales']):,} rows; dim_customer "
+        f"{len(tables['dim_customer']):,} -> {len(built['dim_customer']):,} (-1 Guest "
+        f"added); dim_product {len(tables['dim_product']):,} -> "
+        f"{len(built['dim_product']):,} (-1 Non-product added, which takes every "
+        "quarantined code that is not a product); dim_date "
+        f"{len(tables['dim_date']):,} -> {len(built['dim_date']):,} days (filled out "
+        "to whole years)"
     )
     change(
-        "自然键换成整数代理键; 缺失的外键指向 -1 未知成员而不是空值; 日历补成整年, 加"
-        "排序列; 维度里的聚合列去掉; 多一张 fact_quarantine 和规则桥表; 写成 CSV 给 "
+        "natural keys become integer surrogate keys; a missing foreign key points to "
+        "the -1 unknown member instead of a null; the calendar is filled out to whole "
+        "years, with sort columns; the dimensions lose their aggregate columns; "
+        "fact_quarantine and a rule bridge table are added; written as CSV for "
         "Power BI"
     )
     record(
         "bi semantic model",
         "bi/build_star_schema.py",
-        "已发布的 Parquet",
-        f"{len(built)} 个 CSV",
-        f"fact_sales {len(built['fact_sales']):,} 行",
-        "代理键; -1 未知成员; 整年日历; 去掉维度里的聚合",
+        "the published Parquet",
+        f"{len(built)} CSVs",
+        f"fact_sales {len(built['fact_sales']):,} rows",
+        "surrogate keys; -1 unknown members; whole-year calendar; dimensions without "
+        "aggregates",
     )
 
 
 def step_evaluate(cfg, clean, out):
-    header(11, TOTAL, "evaluate", "evaluate.py", "离线评估: 按时间切开, 测 hit-rate@5")
+    header(
+        11,
+        TOTAL,
+        "evaluate",
+        "evaluate.py",
+        "offline evaluation: split by time, measure hit-rate@5",
+    )
     result = timed(evaluate, clean, cfg)
     # The two fields evaluate.main() adds, so the file compares with the committed one
     result["source_sha256"] = hashlib.sha256(
@@ -705,25 +766,29 @@ def step_evaluate(cfg, clean, out):
         json.dumps(result, indent=2, allow_nan=False), encoding="utf-8"
     )
     log.info(
-        f"  训练 {result['training_rows']:,} 行 (到 {result['training_last_timestamp']}), "
-        f"测试 {result['test_rows']:,} 行 (从 {result['test_first_timestamp']}); 跨切点"
-        f"的发票 {result['cross_boundary_invoices_excluded']} 张两边都不用"
+        f"  training {result['training_rows']:,} rows (to "
+        f"{result['training_last_timestamp']}), test {result['test_rows']:,} rows "
+        f"(from {result['test_first_timestamp']}); the "
+        f"{result['cross_boundary_invoices_excluded']} invoices that straddle the "
+        "cutoff are in neither"
     )
     models = pd.DataFrame.from_dict(result["models"], orient="index")
     table(models.rename_axis("model").reset_index())
     hybrid = result["models"]["hybrid"]
     change(
-        f"clean 按 {result['cutoff']} 切开; 训练部分重新跑 transform + recommend, 测试"
-        f"部分按发票变成购物篮; 篮子里每个商品当一次查询 ({hybrid['queries']:,} 次), "
-        f"看前 {result['k']} 个推荐有没有命中同篮的其他商品; 和最热门商品基线对比"
+        f"clean split at {result['cutoff']}; the training part goes through "
+        "transform + recommend again, the test part becomes baskets by invoice; each "
+        f"product in a basket is one query ({hybrid['queries']:,} in all), a hit when "
+        f"the top {result['k']} recommendations include another product from the "
+        "same basket; compared with a most-popular baseline"
     )
     record(
         "evaluate",
         "evaluate.py",
-        f"clean {len(clean):,} 行",
+        f"clean, {len(clean):,} rows",
         "evaluation.json",
-        f"训练 {result['training_rows']:,} / 测试 {result['test_rows']:,}",
-        f"hit-rate@{result['k']} {hybrid['hit_rate_at_k']:.1%} vs 最热门 "
+        f"training {result['training_rows']:,} / test {result['test_rows']:,}",
+        f"hit-rate@{result['k']} {hybrid['hit_rate_at_k']:.1%} vs most-popular "
         f"{result['models']['most_popular']['hit_rate_at_k']:.1%}",
     )
 
@@ -731,13 +796,22 @@ def step_evaluate(cfg, clean, out):
 def step_not_run():
     log.info("")
     log.info("=" * 78)
-    log.info("没有运行的脚本 (不改变数据)")
+    log.info("Scripts not run (they do not change the data)")
     log.info("=" * 78)
     for script, why in (
-        ("check_cancellations.py", "退货单配对对账; 配对数量已在第 2 步记录"),
-        ("check_revenue_bridge.py", "和 R 版本的正向销售口径对比"),
-        ("verify_doc_figures.py", "重算 doc_figures.json; 第 6 步已经写了一份"),
-        ("build_workshop.py", "生成培训幻灯片"),
+        (
+            "check_cancellations.py",
+            "reconciles the credit evidence; step 2 logged the match counts",
+        ),
+        (
+            "check_revenue_bridge.py",
+            "compares the positive-sale selection with the R version's",
+        ),
+        (
+            "verify_doc_figures.py",
+            "recomputes doc_figures.json; step 6 already wrote one",
+        ),
+        ("build_workshop.py", "refreshes the workshop slides"),
     ):
         log.info(f"  scripts/{script}: {why}")
 
@@ -750,13 +824,16 @@ def _first_difference(a, b):
         if x != y:
             return i, x, y
     i = min(len(a), len(b))
-    return i, (a[i:] or ["<结束>"])[0], (b[i:] or ["<结束>"])[0]
+    return i, (a[i:] or ["<end>"])[0], (b[i:] or ["<end>"])[0]
 
 
 def compare_with_committed(cfg, out):
     log.info("")
     log.info("=" * 78)
-    log.info("复现检查: trace 输出 vs 已提交的报告和已发布的数据")
+    log.info(
+        "Reproducibility check: the trace's outputs vs the committed reports and the "
+        "published data"
+    )
     log.info("=" * 78)
     version = publish.published_reports(cfg)
     pairs = [(version / n, n) for n in (*publish.REPORT_NAMES, "doc_figures.json")]
@@ -764,47 +841,49 @@ def compare_with_committed(cfg, out):
     for new, name in pairs:
         committed = _committed(ROOT / "reports" / name)
         if committed is None:
-            log.info(f"  reports/{name}: HEAD 里没有这个文件")
+            log.info(f"  reports/{name}: not in HEAD")
             continue
         a = _normalise(new.read_text(encoding="utf-8")).splitlines()
         b = _normalise(committed).splitlines()
         if a == b:
-            log.info(f"  reports/{name}: 一致 (run_id 和 compute_seconds 除外)")
+            log.info(
+                f"  reports/{name}: matches (apart from run_id and compute_seconds)"
+            )
         else:
             i, x, y = _first_difference(a, b)
             log.info(
-                f"  reports/{name}: 不一致, 第 {i + 1} 行: trace {x!r} vs 已提交 {y!r}"
+                f"  reports/{name}: DIFFERS at line {i + 1}: trace {x!r} vs committed {y!r}"
             )
 
     real = publish.published_data_dir(pipeline.load_config(ROOT / "config.yaml"))
     if real is None:
         log.info(
-            "  data/ 下还没有已发布的数据版本, 跳过表的比对 "
-            "(python -m retail_pipeline.pipeline 之后再跑)"
+            "  no published data version under data/ yet, so the tables are not "
+            "compared (run this again after python -m retail_pipeline.pipeline)"
         )
         return
-    log.info(f"  已发布的数据版本: {real.name}")
+    log.info(f"  published data version: {real.name}")
     for new in sorted(publish.published_data_dir(cfg).glob("*.parquet")):
         old = real / new.name
         if not old.exists():
-            log.info(f"  {new.name}: 已发布的版本里没有")
+            log.info(f"  {new.name}: not in the published version")
             continue
         a, b = pd.read_parquet(new), pd.read_parquet(old)
         if a.equals(b):
-            log.info(f"  {new.name}: 完全相同 ({len(a):,} 行)")
+            log.info(f"  {new.name}: identical ({len(a):,} rows)")
             continue
         try:
             pd.testing.assert_frame_equal(a, b, check_exact=False, rtol=1e-9)
-            log.info(f"  {new.name}: 一致 ({len(a):,} 行)")
+            log.info(f"  {new.name}: matches within 1e-9 ({len(a):,} rows)")
         except AssertionError as e:
-            log.info(f"  {new.name}: 不一致: {str(e).splitlines()[0]}")
+            log.info(f"  {new.name}: DIFFERS: {str(e).splitlines()[0]}")
 
 
 def write_lineage(out):
     lines = [
         "# Data lineage (trace run)",
         "",
-        "| 步骤 | 模块 | 输入 | 输出 | 行数变化 | 结构上发生了什么 |",
+        "| Step | Module | Input | Output | Rows | What happened to the structure |",
         "|---|---|---|---|---|---|",
     ]
     lines += [
@@ -820,7 +899,7 @@ def main():
     run_id = f"trace_{stamp}_{git_tag()}"
     out = ROOT / "data" / "trace" / run_id
     setup(out)
-    log.info(f"trace run {run_id}; 所有输出写在 {out}")
+    log.info(f"trace run {run_id}; everything is written under {out}")
 
     t0 = time.perf_counter()
     try:
@@ -828,7 +907,7 @@ def main():
     except BaseException:
         # Into trace.log as well as onto the screen: the last header above this
         # line is the step that failed.
-        log.exception(f"trace 失败, 用时 {time.perf_counter() - t0:,.0f} s")
+        log.exception(f"trace failed after {time.perf_counter() - t0:,.0f} s")
         raise
 
 
@@ -853,7 +932,7 @@ def _run(out, run_id, t0):
     write_lineage(out)
     compare_with_committed(cfg, out)
     log.info("")
-    log.info(f"完成, 共 {time.perf_counter() - t0:,.0f} s; 日志 {out / 'trace.log'}")
+    log.info(f"done in {time.perf_counter() - t0:,.0f} s; log {out / 'trace.log'}")
 
 
 if __name__ == "__main__":
