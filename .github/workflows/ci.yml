@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  # Weekly as well, so an advisory against a pinned package fails pip-audit
+  # within a week rather than at the next push.
+  schedule:
+    - cron: "17 9 * * 1"
 
 permissions:
   contents: read
@@ -44,6 +49,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.lock
           pip install -e . --no-deps
+
+      # The install above never reads pyproject.toml's pins, so one that moves
+      # only there (ruff in #27) would never reach CI. This fails until the
+      # lock and requirements-dbt.txt are brought into line.
+      - name: Pinned installs satisfy pyproject.toml
+        run: python scripts/check_lock.py
 
       - name: Lint
         run: ruff check .
