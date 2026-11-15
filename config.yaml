@@ -49,6 +49,10 @@ recommend:
   min_support_count: 30       # a pair must appear in at least this many baskets
   min_confidence: 0.10
   min_lift: 1.0
+  # lift or confidence. Lift is what the user guide teaches merchandisers to
+  # read; it is not the more accurate of the two. reports/evaluation.json
+  # scores both under hybrid_by_rank_key.
+  rank_by: lift
   top_n: 5
   max_basket_size: 60
 

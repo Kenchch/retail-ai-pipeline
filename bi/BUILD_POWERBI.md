@@ -47,7 +47,7 @@ changes wholesale on every run is the worst possible shape for a git object —
 so the three commands above are how those CSVs come to exist on your machine.
 They reconcile to the figures in the repo's own
 [`reports/run_metrics.json`](../reports/run_metrics.json): 541,909 rows read,
-19,343 quarantined (3.57%), 522,566 loaded, 3,803 products, 17,083
+19,343 quarantined (3.57%), 522,566 loaded, 3,803 products, 17,331
 recommendations.
 
 ## 1. Create the folder parameter first

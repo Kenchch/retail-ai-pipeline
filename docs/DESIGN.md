@@ -37,16 +37,16 @@ Source: UCI **Online Retail** — a UK online giftware retailer, Dec 2010 – De
 | Rows read | 541,909 line items across 25,900 invoices |
 | Quarantined by data-quality rules | **19,343 (3.57%)** |
 | Loaded | 522,566 line items · 3,803 products · 4,334 customers · 374 days (305 traded) |
-| Recommendations | 17,083 rows covering the full catalogue |
+| Recommendations | 17,331 rows covering the full catalogue |
 | Simulated adoption dataset | 62 fictional users, 5 teams, 12 weeks |
-| Runtime | 10.6 s of compute on the machine that last published — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top. It moves with the hardware, not with the pipeline: the same code has recorded 9.3, 14.1 and 10.6 |
+| Runtime | 9.8 s of compute on the machine that last published — `compute_seconds` in `reports/run_metrics.json`; the publish adds ~4 s on top. It moves with the hardware, not with the pipeline: the same code has recorded 9.3, 14.1, 10.6 and 9.8 |
 
 The strongest associations are ones a merchandiser would expect — the cheapest
 sanity check there is:
 
 ```
-LANDMARK FRAME COVENT GARDEN  ->  LANDMARK FRAME OXFORD STREET   lift 196.4   30 baskets
-CHILDS GARDEN SPADE BLUE      ->  CHILDS GARDEN SPADE PINK       lift  95.1   40 baskets
+LANDMARK FRAME COVENT GARDEN  ->  LANDMARK FRAME OXFORD STREET   lift 351.6   30 baskets
+CHILDS GARDEN SPADE BLUE      ->  CHILDS GARDEN SPADE PINK       lift 247.0   40 baskets
 ```
 
 Outputs: [`reports/data_quality_report.md`](../reports/data_quality_report.md) ·
@@ -253,15 +253,20 @@ continuous calendar — this retailer is shut on Saturdays, and a dimension buil
 from observed dates would omit 53 of them and hand BI six-day weeks.
 
 **Recommendations, two signals.** Co-purchase rules from transactions
-(structured) ranked by **lift**, not raw co-occurrence — ranking by count makes
-the best sellers the recommendation for everything. TF-IDF over product
-description text (unstructured) covers the long tail that never reaches the
-support threshold. Every row carries a `method` column so the two are never
+(structured) ranked by **lift**. Lift moves best sellers down a product's list
+and confidence moves them up; lift is the default because it is the column the
+user guide teaches, not because it retrieves more. On held-out baskets the same
+rules ranked by confidence do slightly better, and a co-occurrence baseline
+with no thresholds beats both
+([evaluation](../README.md#temporal-recommendation-evaluation)). TF-IDF over
+product description text (unstructured) covers the long tail that never reaches
+the support threshold. Every row carries a `method` column so the two are never
 conflated.
 
-The population for support and confidence is **every** basket, including ones
-holding a single item. A basket where A was bought alone is evidence against
-"A → B", so dropping it inflates the rule. Three baskets, worked by hand:
+The population for support, confidence and lift is every basket of up to
+`max_basket_size` distinct products, including ones holding a single item. A
+basket where A was bought alone is evidence against "A → B", so dropping it
+inflates the rule. Three baskets, worked by hand:
 
 ```
 {A}   {A, B}   {A, B, C}          all baskets = 3;  A in 3, B in 2, C in 1
@@ -271,11 +276,15 @@ confidence(A→B) = 2/3 = 0.67      not 2/2 — the {A} basket stays in
 lift(A,B)       = 0.67 / (2/3) = 1.0
 ```
 
-`max_basket_size` filters pair *generation* only, for the same reason: a
-1,107-item wholesale order would contribute 612k pairs of things that shared a
-pallet, but the products in it were still sold. Both figures are therefore
-conservative rather than inflated. `test_single_item_baskets_count_in_the_denominator`
-pins the arithmetic above.
+Baskets over `max_basket_size` leave the numerator and the denominator
+together. A 1,107-item wholesale order would contribute 612k pairs of things
+that shared a pallet, so its pairs are not counted; keeping it in a product's
+denominator anyway would score everything bought with that product there as
+"bought without". An earlier version did that, and read 0.14 for a rule where
+239 of the product's 313 baskets were over the cap. The figures now describe
+ordinary-sized baskets and say nothing about the 1,491 larger ones.
+`test_single_item_baskets_count_in_the_denominator` and
+`test_oversized_baskets_leave_the_numerator_and_the_denominator` pin both halves.
 
 **Adoption.** Reach, activation, action rate and CSAT, weekly and by team.
 Activation is the one that matters — a view changes nothing. A metric with no

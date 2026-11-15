@@ -33,7 +33,7 @@ from retail_pipeline.pipeline import (
     reports_dir,
     transform,
 )
-from retail_pipeline.recommend import COLUMNS, recommend
+from retail_pipeline.recommend import COLUMNS, co_purchase_rules, recommend
 
 HEADER = (
     "InvoiceNo,StockCode,Description,Quantity,InvoiceDate,"
@@ -759,13 +759,14 @@ def test_single_item_baskets_count_in_the_denominator(cfg):
     assert round(ab["lift"].iat[0], 4) == 1.0
 
 
-def test_oversized_baskets_count_in_the_denominator(cfg):
-    """The size cap is a pair-generation guard, not a population definition.
+def test_oversized_baskets_leave_the_numerator_and_the_denominator(cfg):
+    """One population: a basket whose pairs are not counted is not counted.
 
-    A product sold in wholesale-scale baskets had those baskets dropped from
-    its own denominator, which is what inflated confidence 4.2x on the worst
-    real rule. Here A appears in 3 baskets, one of them over the cap, and
-    pairs with B in one of the two countable ones.
+    Counting A's oversized baskets in its denominator while skipping their
+    pairs scores every co-purchase inside them as "A without B". Here A is in
+    3 baskets, one of them over the cap and holding B. Of the two that count,
+    one holds B: confidence 1/2. The mixed version reported 1/3, which is only
+    a floor, since the uncounted basket did hold both.
     """
     cfg["recommend"].update(
         min_support_count=1, min_confidence=0.0, min_lift=0.0, max_basket_size=3
@@ -779,9 +780,48 @@ def test_oversized_baskets_count_in_the_denominator(cfg):
     recs = recommend({"fact_sales": fact, "dim_product": dim}, cfg)
 
     ab = recs[(recs.stock_code == "A") & (recs.recommended_stock_code == "B")]
-    # A is in all 3 baskets; the oversized one is excluded from pairing only.
-    assert round(ab["confidence"].iat[0], 4) == round(1 / 3, 4)
-    assert round(ab["support"].iat[0], 4) == round(1 / 3, 4)
+    assert round(ab["confidence"].iat[0], 4) == 0.5
+    assert round(ab["support"].iat[0], 4) == 0.5
+    # B is in 1 of the 2 countable baskets: lift = 0.5 / 0.5.
+    assert round(ab["lift"].iat[0], 4) == 1.0
+
+
+def test_a_product_sold_only_in_oversized_baskets_gets_no_rule(cfg):
+    """Nothing is known about it at ordinary basket sizes, so nothing is said."""
+    cfg["recommend"].update(
+        min_support_count=1, min_confidence=0.0, min_lift=0.0, max_basket_size=2
+    )
+    rows = [("I1", "A"), ("I1", "B")] + [("I2", p) for p in "ABC"]
+    recs = co_purchase_rules(
+        pd.DataFrame(rows, columns=["invoice_no", "stock_code"]), cfg
+    )
+    assert "C" not in set(recs.stock_code) | set(recs.recommended_stock_code)
+
+
+def test_rank_by_chooses_which_rule_survives_the_cut(cfg):
+    """A -> B is the likelier purchase, A -> C the stronger association.
+
+    10 baskets: A in 4. B is in 8 of the 10 and in 3 of A's; C is in 2 of the
+    10 and both are A's. confidence: B 3/4, C 2/4. lift: B 0.94, C 2.5.
+    """
+    cfg["recommend"].update(
+        min_support_count=1, min_confidence=0.0, min_lift=0.0, top_n=1
+    )
+    baskets = ["ABC", "ABC", "AB", "A", "B", "B", "B", "B", "B", "D"]
+    fact = pd.DataFrame(
+        [(f"I{i}", p) for i, basket in enumerate(baskets) for p in basket],
+        columns=["invoice_no", "stock_code"],
+    )
+    picks = {}
+    for key in ("lift", "confidence"):
+        cfg["recommend"]["rank_by"] = key
+        rules = co_purchase_rules(fact, cfg)
+        picks[key] = rules.loc[rules.stock_code == "A", "recommended_stock_code"].iat[0]
+    assert picks == {"lift": "C", "confidence": "B"}
+
+    cfg["recommend"]["rank_by"] = "support"
+    with pytest.raises(ValueError, match="rank_by"):
+        co_purchase_rules(fact, cfg)
 
 
 def test_lift_is_computed_correctly(cfg):

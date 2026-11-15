@@ -386,7 +386,8 @@ def step_recommend(cfg, tables):
         f"  baskets (one per invoice): {len(sizes):,}; 1 item "
         f"{int((sizes == 1).sum()):,}, 2..{cap} items "
         f"{int(sizes.between(2, cap).sum()):,} (only these are paired), more than "
-        f"{cap} items {int((sizes > cap).sum()):,}; the denominator is every basket"
+        f"{cap} items {int((sizes > cap).sum()):,} (outside every rule); the "
+        f"denominator is the baskets of 1..{cap} items"
     )
     top = timed(co_purchase_rules, fact, cfg)
     frame(
@@ -751,7 +752,7 @@ def step_evaluate(cfg, clean, out):
         TOTAL,
         "evaluate",
         "evaluate.py",
-        "offline evaluation: split by time, measure hit-rate@5",
+        "offline evaluation: split by time, measure basket hit-rate@5",
     )
     result = timed(evaluate, clean, cfg)
     # The two fields evaluate.main() adds, so the file compares with the committed one
@@ -772,7 +773,9 @@ def step_evaluate(cfg, clean, out):
         f"{result['cross_boundary_invoices_excluded']} invoices that straddle the "
         "cutoff are in neither"
     )
-    models = pd.DataFrame.from_dict(result["models"], orient="index")
+    models = pd.DataFrame.from_dict(result["models"], orient="index").drop(
+        columns="by_basket_size"
+    )
     table(models.rename_axis("model").reset_index())
     hybrid = result["models"]["hybrid"]
     change(
@@ -780,7 +783,9 @@ def step_evaluate(cfg, clean, out):
         "transform + recommend again, the test part becomes baskets by invoice; each "
         f"product in a basket is one query ({hybrid['queries']:,} in all), a hit when "
         f"the top {result['k']} recommendations include another product from the "
-        "same basket; compared with a most-popular baseline"
+        "same basket; queries are averaged within each basket, then across "
+        f"the {hybrid['baskets']:,} baskets; compared with a most-popular and a "
+        "co-occurrence baseline"
     )
     record(
         "evaluate",
@@ -788,8 +793,9 @@ def step_evaluate(cfg, clean, out):
         f"clean, {len(clean):,} rows",
         "evaluation.json",
         f"training {result['training_rows']:,} / test {result['test_rows']:,}",
-        f"hit-rate@{result['k']} {hybrid['hit_rate_at_k']:.1%} vs most-popular "
-        f"{result['models']['most_popular']['hit_rate_at_k']:.1%}",
+        f"basket hit-rate@{result['k']} {hybrid['basket_hit_rate_at_k']:.1%} vs "
+        f"most-popular {result['models']['most_popular']['basket_hit_rate_at_k']:.1%}"
+        f", co-occurrence {result['models']['co_occurrence']['basket_hit_rate_at_k']:.1%}",
     )
 
 
