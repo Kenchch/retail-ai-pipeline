@@ -8,12 +8,13 @@ Two signals, one structured and one unstructured:
     confidence(A→B) = baskets with both / baskets with A
     lift(A,B)       = confidence(A→B) / (baskets with B / all baskets)
 
-"All baskets" means all of them - including single-item baskets, which are
-evidence against a rule rather than absent from it. Only the numerator's pair
-counting skips baskets outside 2..max_basket_size: a one-item basket cannot
-form a pair, and a 1,107-item wholesale order would contribute 612k pairs of
-things that merely shared a pallet. So the three figures are conservative,
-never inflated - a co-purchase inside an oversized basket goes uncounted.
+The population is every basket of 1..max_basket_size distinct products, for
+the numerator and the denominator alike. Single-item baskets stay in: a basket
+where A was bought alone is evidence against "A -> B". Baskets over the cap
+leave both sides: a 1,107-item wholesale order would contribute 612k pairs of
+things that merely shared a pallet, so its pairs are not counted, and a basket
+whose pairs are not counted cannot stay in the denominator either. Leaving it
+there scores every uncounted co-purchase as "A was bought without B".
 
 Worked example, three baskets: {A}, {A, B}, {A, B, C}
 
@@ -23,10 +24,19 @@ Worked example, three baskets: {A}, {A, B}, {A, B, C}
     confidence(A→B)  = 2/3 = 0.67      <- not 2/2, the {A} basket counts
     lift(A,B)        = 0.67 / (2/3) = 1.0
 
-Rules are ranked by **lift**, not by raw co-occurrence, because raw counts just
-re-rank the best sellers - a popular product co-occurs with everything, which
-makes for recommendations that are confidently useless. `lift > 1` means B is
-genuinely more likely in a basket that already holds A than in a random one.
+The figures therefore describe ordinary-sized baskets and say nothing about
+wholesale-scale ones; `baskets_over_cap` in the log line says how many that is.
+
+Rules are ranked by **lift** by default (`recommend.rank_by`). Lift answers "how
+much more likely than usual" and confidence answers "how likely", so ranking by
+confidence moves best sellers up every list and ranking by lift moves them
+down. `lift > 1` means B is more likely in a basket that already holds A than
+in a random one.
+
+That is a choice about what a merchandiser is shown, not a claim about
+accuracy. On held-out baskets, ranking the same rules by confidence retrieves
+slightly more of what was bought, and plain co-occurrence with no thresholds
+retrieves more than either; reports/evaluation.json carries all three.
 
 **Description similarity (unstructured).** Long-tail products never reach the
 support threshold and would show an empty panel. TF-IDF over the free-text
@@ -75,6 +85,12 @@ COLUMNS = [
 # handful in one pass.
 CANDIDATE_WIDTH = 50
 
+# What a product's rules can be ordered by before the top_n cut. Raw
+# co-occurrence is not a third option: for one source product, confidence is
+# the pair count over a constant, so the two give the same order. The
+# evaluation scores both keys, so the one config.yaml names has been measured.
+RANK_KEYS = ("lift", "confidence")
+
 
 def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     c = cfg["recommend"]
@@ -94,32 +110,33 @@ def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     # on the lists regardless.
     sizes = baskets.map(len)
 
-    # The population is every basket, and the size filter applies ONLY to pair
-    # generation. These are two different questions and conflating them
-    # overstates the result.
+    # One population for all three figures: baskets of 1..max_basket_size
+    # distinct products. Two earlier versions each got half of this wrong.
     #
-    # "Of the baskets containing A, how many also contain B" is a question about
-    # all baskets containing A - including the ones where A was bought alone,
-    # which are evidence *against* the rule, and including wholesale-scale ones.
-    # Counting `items` and `n` over the filtered set instead shrinks every
-    # denominator: on this dataset it inflated confidence on 100% of published
-    # rules, by 1.47x at the median and 4.2x at the worst (84032A -> 84032B read
-    # 0.59 where the true figure is 0.14, because 239 of that product's 313
-    # baskets were larger than the cap and silently left the denominator).
+    # The first counted only pair-forming baskets (2..cap). That drops the
+    # baskets where A was bought alone, which are evidence against A -> B, so
+    # confidence read high.
     #
-    # Pair generation still skips them, for two different reasons: a one-item
-    # basket cannot produce a pair at all, and a 1,107-item wholesale order
-    # would contribute 612k pairs of things that merely shared a pallet. That
-    # makes support/confidence/lift *conservative* - co-occurrences inside
-    # oversized baskets go uncounted - which is the safe direction for a number
-    # someone is going to act on.
-    n = len(baskets)
+    # The second kept the cap on pair counting but counted `items` and `n` over
+    # every basket. That mixes populations: a product's oversized baskets sat
+    # in its denominator while whatever was bought with it there went
+    # uncounted, i.e. was scored as "bought without". 84032A -> 84032B read
+    # 0.14 because 239 of that product's 313 baskets were over the cap. 0.14 is
+    # a floor, not the confidence, and the size of the understatement differs
+    # by product, so it moved the lift ranking and pushed wholesale-heavy
+    # products under min_confidence.
+    #
+    # The cap itself stays: a 1,107-item wholesale order would contribute 612k
+    # pairs of things that merely shared a pallet.
+    eligible = baskets[sizes <= c["max_basket_size"]]
+    n = len(eligible)
+    if n == 0:
+        log.warning("Every basket exceeds max_basket_size - no baskets to mine")
+        return pd.DataFrame()
     items: Counter = Counter()
-    for products in baskets:
-        items.update(products)
-
     pairs: Counter = Counter()
-    for products in baskets[(sizes >= 2) & (sizes <= c["max_basket_size"])]:
+    for products in eligible:
+        items.update(products)
         pairs.update(combinations(products, 2))  # sorted -> stable key
     rows = []
     for (a, b), count in pairs.items():
@@ -140,8 +157,9 @@ def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
     rules = pd.DataFrame(rows)
     log.info(
-        "Baskets %s | pairs %s | rules %s",
+        "Baskets %s | baskets_over_cap %s | pairs %s | rules %s",
         f"{n:,}",
+        f"{len(baskets) - n:,}",
         f"{len(pairs):,}",
         f"{len(rules):,}",
     )
@@ -162,9 +180,14 @@ def co_purchase_rules(fact: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     # incidental properties holding at once, none of which this module states
     # or tests. The tied product is decided by the data after this, rather than
     # decided correctly by luck.
+    rank_by = c.get("rank_by", "lift")
+    if rank_by not in RANK_KEYS:
+        raise ValueError(
+            f"recommend.rank_by must be one of {RANK_KEYS}, not {rank_by!r}"
+        )
     top = (
         rules.sort_values(
-            ["stock_code", "lift", "recommended_stock_code"],
+            ["stock_code", rank_by, "recommended_stock_code"],
             ascending=[True, False, True],
         )
         .groupby("stock_code")

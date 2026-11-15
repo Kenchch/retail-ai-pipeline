@@ -90,8 +90,8 @@ puts them in diagnosis mode and answers the question they are actually holding
 segment and email it. Never cut the exercise.
 
 **The exercise row that matters** is WHITE METAL LANTERN → WHITE HANGING HEART
-T-LIGHT HOLDER: 63 baskets, confidence 0.19, lift 1.65. It looks like a finding
-until you notice the same t-light holder is recommended for 79 products —
+T-LIGHT HOLDER: 63 baskets, confidence 0.28, lift 2.91. It looks like a finding
+until you notice the same t-light holder is recommended for 72 products —
 it is in a large share of every basket, so it pairs with everything. Use this row to discuss popularity versus affinity.
 
 **How to read this report:** the weekly reach series is generated telemetry,

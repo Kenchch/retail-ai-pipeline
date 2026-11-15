@@ -68,8 +68,9 @@ product, both directions.
 *Accepted when:* every row carries its basket count; lift is unit-tested against
 a hand-worked example; pairs below the minimum basket count are excluded.
 
-> Rank by **lift**, not raw co-occurrence. Ranking by count makes the best
-> sellers the recommendation for everything — confidently useless.
+> Rank by **lift**. Ranking by count or confidence moves the best sellers up
+> every list. This is a choice about what a merchandiser reads, not about
+> accuracy: the offline evaluation scores confidence ranking slightly higher.
 
 **R5 — Cover the long tail.** Products with no qualifying rule fall back to
 TF-IDF similarity over the description text.
@@ -110,8 +111,10 @@ fires on a legitimate first run teaches people to ignore it.
 1. Rolling 30-day window vs all-history for the co-purchase counts? All-history
    is stable; a window reacts to seasonality. Worth measuring once there is an
    A/B harness to measure against.
-2. `min_support_count = 30` is judgement, not evidence. Action-rate per rule
-   would turn it into evidence.
+2. `min_support_count = 30` is judgement, not evidence, and the offline
+   evaluation prices it: a co-occurrence baseline with no threshold retrieves
+   more. Action-rate per rule would say whether the stricter rules are acted
+   on more often.
 3. Product hierarchy in `dim_product` — not required by this release, but every
    Merchandising conversation reaches "show me this by category" within five
    minutes.

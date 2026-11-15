@@ -1,11 +1,11 @@
 {
-  "run_id": "local_20260908T065506219324",
+  "run_id": "local_20261115T081814430017",
   "rows_source": 541909,
   "rows_quarantined": 19343,
   "quarantine_rate_pct": 3.57,
   "rows_loaded": 522566,
   "products": 3803,
-  "recommendations": 17083,
+  "recommendations": 17331,
   "catalogue_coverage_pct": 100.0,
   "adoption": {
     "reach_pct": 74.2,
@@ -30,5 +30,5 @@
       ]
     }
   },
-  "compute_seconds": 10.6
+  "compute_seconds": 9.8
 }

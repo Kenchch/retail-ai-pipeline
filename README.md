@@ -21,9 +21,10 @@ one. dbt then builds contracted DuckDB marts from the published version, and
 the Power BI model is built from CSVs exported from its Parquet files.
 
 **Result.** 19,343 lines (3.6%) quarantined, each with a stated reason; loaded
-plus quarantined equals the source row count. Recommendations reach a 56.3%
-hit-rate@5 against 52.8% for a most-popular baseline (+3.5 points) on 161,844
-held-out basket queries.
+plus quarantined equals the source row count. Recommendations reach a 45.1%
+basket hit-rate@5 against 26.5% for a most-popular baseline (+18.6 points) on 5,183
+held-out baskets. A plain co-occurrence baseline with no thresholds reaches
+53.4%, so the published rules are not the most accurate model measured here.
 
 **Trade-offs.** Airflow, its Postgres metadata database and Docker Compose are
 heavier than one 45 MB extract needs. They are here to show orchestration; for
@@ -63,7 +64,7 @@ flowchart LR
 | Loaded / quarantined | 522,566 / 19,343 (3.6%, each with the rules it broke) |
 | Gross accepted positive sales | £10,247,353.28 over 19,773 invoices |
 | Exact matched cancellations / net of those matches | £385,958.88 / £9,861,394.40, the same as the R analysis |
-| Recommendation rows | 17,083, covering all 3,803 products |
+| Recommendation rows | 17,331, covering all 3,803 products |
 
 Evidence: [run metrics](reports/run_metrics.json), [quality report](reports/data_quality_report.md),
 [Power BI model](bi/MODEL.md) and [report pages](bi/README.md).
@@ -85,15 +86,37 @@ The detailed revenue bridge is in [design notes](docs/DESIGN.md#reconciliation-w
 
 Training uses accepted lines before 2011-10-01; evaluation uses later baskets.
 Each product in a basket with at least two distinct products is a query, and a
-hit retrieves another product in that basket. All three models use training data only.
+hit retrieves another product in that basket. All four models use training data only.
 
-| Model | Hit-rate@5 | Against most popular | Query coverage |
-|---|---:|---:|---:|
-| Hybrid | 56.3% | +3.5 pts | 95.2% |
-| Most popular | 52.8% | baseline | 100.0% |
-| Content TF-IDF | 51.7% | −1.1 pts | 95.2% |
+| Model | Basket hit-rate@5 | Against most popular | Per-query hit-rate@5 | Query coverage |
+|---|---:|---:|---:|---:|
+| Co-occurrence baseline | 53.4% | +26.9 pts | 68.1% | 95.2% |
+| Hybrid (published) | 45.1% | +18.6 pts | 56.4% | 95.2% |
+| Content TF-IDF | 39.8% | +13.3 pts | 51.7% | 95.2% |
+| Most popular | 26.5% | baseline | 52.8% | 100.0% |
+
+The basket rate averages the queries inside each basket and then the 5,183
+baskets, so a basket counts once. The per-query rate was this project's only
+figure until it was replaced: it counts a basket once per product, so the 513
+baskets of more than 60 products supply 73,535 of the 161,844 queries, and in a
+basket that size five best sellers hit for almost any query. That is why most
+popular scores 52.8% per query and 26.5% per basket. The report carries both
+rates for five basket-size bands.
+
+Two things the table says against the published design:
+
+- **The co-occurrence baseline wins.** It recommends whatever shared the most
+  training baskets with the product, with no support, confidence or lift
+  threshold, and fills from the best sellers. The published rules need 30
+  shared baskets, which leaves 2,670 of 3,803 products to the text fallback.
+  The threshold is there so that a merchandiser reads rules with evidence
+  behind them; it costs 8.3 points of basket hit-rate.
+- **Ranking by lift is not the more accurate choice.** The same rules ranked by
+  confidence reach 46.5%, against 45.1% by lift. Lift is kept because it is the
+  column the user guide teaches; `recommend.rank_by` switches it.
 
 The 161,844 queries are basket-completion queries, not independent customers.
+One temporal split, no confidence intervals, and no model was tuned on it.
 This offline comparison does not measure sales uplift. The
 [evaluation artifact](reports/evaluation.json) records counts, cutoff, source hash
 and library versions. Reproduce with `python -m retail_pipeline.evaluate` after
@@ -142,6 +165,8 @@ What the project is now.
 - A missing source column fails the extract; a new or redefined one passes.
 - Gross and exact-match-net revenue are separate; neither estimates unmatched refunds.
 - Offline associations do not establish recommendation impact or causal uplift.
+- Support, confidence and lift describe baskets of up to 60 products. The 1,491
+  larger ones are outside every rule, on both sides of each ratio.
 - Adoption metrics use generated telemetry, not real users.
 - Power BI setup and the workshop describe a portfolio scenario.
 
