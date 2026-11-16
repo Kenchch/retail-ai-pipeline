@@ -206,6 +206,10 @@ Documentation examples are computed in [doc_figures.json](reports/doc_figures.js
 After downloading the source, run `python scripts/verify_doc_figures.py`, then
 `python scripts/build_workshop.py` (requires python-pptx) to refresh the editable
 workshop. Its PDF is a rendered preview; the PPTX retains editable text and charts.
+`tests/test_workshop_deck.py` fails when either was built from other figures:
+it reads the PPTX's text, and the fingerprint of the figures that the build
+records in the PDF. It cannot tell whether the PDF's pictures are renders of
+that PPTX.
 
 ## How this was built
 
